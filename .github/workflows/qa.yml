@@ -69,6 +69,12 @@ jobs:
       - name: Write .env.local for the db scripts
         run: env | grep -E '^(DATABASE_URL|AUTH_SECRET|AUTH_TRUST_HOST|APP_URL|SMTP_|EMAIL_FROM|CRON_SECRET|UPLOAD_DIR|PLATFORM_BANK_)' > .env.local
 
+      # PageProps, LayoutProps and RouteContext are global types Next.js generates into
+      # .next/types. A fresh checkout has none, so generate them before type checking
+      # (seconds, instead of waiting for the full build).
+      - name: Generate Next.js route types
+        run: npx next typegen
+
       - name: Type check
         run: npx tsc --noEmit
 
