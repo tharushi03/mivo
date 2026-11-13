@@ -42,7 +42,7 @@ async function Users({ searchParams }: Pick<PageProps<"/admin/users">, "searchPa
   if (filter === "suspended") conds.push(isNotNull(users.suspendedAt));
   else if (filter !== "all") conds.push(eq(users.role, filter));
   if (q) {
-    const like = `%${q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const like = `%${q.replace(/[\\%_]/g, (c: string) => `\\${c}`)}%`;
     conds.push(or(ilike(users.email, like), ilike(users.name, like), ilike(sellerProfiles.shopName, like))!);
   }
   const where = conds.length ? and(...conds) : undefined;
