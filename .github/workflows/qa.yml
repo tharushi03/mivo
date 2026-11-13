@@ -1,0 +1,120 @@
+# MIVO quality gate: static checks, then the Playwright suite in three browsers against a
+# production build backed by a throwaway Postgres database.
+# Test plan and documents: qa-portfolio/
+name: QA
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  e2e:
+    name: Static checks + Playwright (Chromium, Firefox, WebKit)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: mivo
+          POSTGRES_PASSWORD: mivo
+          POSTGRES_DB: mivo_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U mivo -d mivo_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    # Test-only values. Nothing here is a real secret: the database and app exist only
+    # for the length of this job.
+    env:
+      DATABASE_URL: postgres://mivo:mivo@localhost:5432/mivo_test
+      AUTH_SECRET: ci-only-auth-secret-not-used-anywhere-else-0123456789
+      AUTH_TRUST_HOST: "true"
+      APP_URL: https://ci.mivo.test
+      SMTP_HOST: 127.0.0.1 # nothing listens here: emails fail and are logged, tests don't depend on them
+      SMTP_PORT: "2525"
+      EMAIL_FROM: MIVO CI <ci@mivo.test>
+      CRON_SECRET: ci-only-cron-secret-0123456789
+      UPLOAD_DIR: ${{ github.workspace }}/.ci-uploads
+      PLATFORM_BANK_NAME: Test Bank PLC
+      PLATFORM_BANK_BRANCH: Colombo
+      PLATFORM_BANK_ACCOUNT_NAME: MIVO CI
+      PLATFORM_BANK_ACCOUNT_NUMBER: "0000111122223333"
+      NEXT_TELEMETRY_DISABLED: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            qa-portfolio/ui-tests/package-lock.json
+
+      - name: Install app dependencies
+        run: npm ci
+
+      # The npm db scripts read .env.local, so write one from the job's environment.
+      - name: Write .env.local for the db scripts
+        run: env | grep -E '^(DATABASE_URL|AUTH_SECRET|AUTH_TRUST_HOST|APP_URL|SMTP_|EMAIL_FROM|CRON_SECRET|UPLOAD_DIR|PLATFORM_BANK_)' > .env.local
+
+      - name: Type check
+        run: npx tsc --noEmit
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Migrate and seed the test database
+        run: |
+          npm run db:migrate
+          npm run db:seed
+          npm run db:seed:demo
+
+      - name: Build
+        run: npm run build
+
+      - name: Start the app
+        run: |
+          npm start > app.log 2>&1 &
+          for i in $(seq 1 60); do
+            curl -fsS -o /dev/null http://localhost:3000/ && echo "app is up" && exit 0
+            sleep 2
+          done
+          echo "app did not start"; cat app.log; exit 1
+
+      - name: Install test dependencies and browsers
+        working-directory: qa-portfolio/ui-tests
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium firefox webkit
+
+      - name: Run Playwright tests
+        working-directory: qa-portfolio/ui-tests
+        env:
+          BASE_URL: http://localhost:3000
+        run: npx playwright test
+
+      - name: Upload Playwright report
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            qa-portfolio/reports/playwright-html
+            qa-portfolio/reports/playwright-results
+          retention-days: 14
+
+      - name: Show app log on failure
+        if: failure()
+        run: tail -n 200 app.log || true

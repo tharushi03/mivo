@@ -1,0 +1,20 @@
+{
+  "name": "mivo-ui-tests",
+  "private": true,
+  "description": "Playwright end-to-end tests for MIVO (Chromium, Firefox, WebKit)",
+  "scripts": {
+    "test": "playwright test",
+    "test:chromium": "playwright test --project=chromium",
+    "test:headed": "playwright test --project=chromium --headed",
+    "report": "playwright show-report ../reports/playwright-html",
+    "browsers": "playwright install chromium firefox webkit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.65.0",
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
+    "bcryptjs": "^3.0.3",
+    "pg": "^8.23.1",
+    "typescript": "^5.9.3"
+  }
+}

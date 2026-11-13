@@ -1,0 +1,424 @@
+{
+  "info": {
+    "name": "MIVO API",
+    "description": "API checks for MIVO: Auth.js login, the checkout Server Action, and access control. Set the collection variables first. Run with Postman's Collection Runner or Newman: `npx newman run mivo-api.json --env-var baseUrl=http://localhost:3000`.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Auth (Auth.js credentials login)",
+      "item": [
+        {
+          "name": "Get CSRF token",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const body = pm.response.json();",
+                  "pm.test(\"returns a csrfToken\", () => pm.expect(body.csrfToken).to.be.a(\"string\").and.not.empty);",
+                  "pm.collectionVariables.set(\"csrfToken\", body.csrfToken);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/csrf"
+          }
+        },
+        {
+          "name": "Login with a wrong password is refused",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"redirects (302)\", () => pm.response.to.have.status(302));",
+                  "pm.test(\"redirect reports an error\", () => pm.expect(pm.response.headers.get(\"Location\")).to.include(\"error\"));",
+                  "pm.test(\"no session cookie is set\", () => {",
+                  "  const setCookie = pm.response.headers.filter(h => h.key.toLowerCase() === \"set-cookie\").map(h => h.value).join(\";\");",
+                  "  pm.expect(setCookie).to.not.include(\"session-token=e\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/callback/credentials",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "csrfToken",
+                  "value": "{{csrfToken}}"
+                },
+                {
+                  "key": "email",
+                  "value": "{{buyerEmail}}"
+                },
+                {
+                  "key": "password",
+                  "value": "definitely-wrong"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Login as buyer",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"redirects after login (302)\", () => pm.response.to.have.status(302));",
+                  "pm.test(\"sets the session cookie\", () => {",
+                  "  const setCookie = pm.response.headers.filter(h => h.key.toLowerCase() === \"set-cookie\").map(h => h.value).join(\";\");",
+                  "  pm.expect(setCookie).to.include(\"session-token=\");",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/auth/callback/credentials",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/x-www-form-urlencoded"
+              }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                {
+                  "key": "csrfToken",
+                  "value": "{{csrfToken}}"
+                },
+                {
+                  "key": "email",
+                  "value": "{{buyerEmail}}"
+                },
+                {
+                  "key": "password",
+                  "value": "{{buyerPassword}}"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Session shows the logged-in buyer",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const s = pm.response.json();",
+                  "pm.test(\"session belongs to the buyer\", () => pm.expect(s.user.email).to.eql(pm.collectionVariables.get(\"buyerEmail\")));",
+                  "pm.test(\"role is BUYER\", () => pm.expect(s.user.role).to.eql(\"BUYER\"));",
+                  "pm.test(\"password hash is never exposed\", () => pm.expect(JSON.stringify(s)).to.not.include(\"$2\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/api/auth/session"
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Checkout (Next.js Server Action)",
+      "description": "Checkout is a Next.js Server Action, not a REST endpoint. The browser POSTs the form to the page URL with a `Next-Action` header holding the action's ID. That ID changes with every build: after `npm run build`, find the key whose `exportedName` is `placeOrder` in `.next/server/server-reference-manifest.json` and paste it into the `placeOrderActionId` variable. The buyer must have a confirmed email. Run the Auth folder first (Postman keeps the session cookie).",
+      "item": [
+        {
+          "name": "Place a bank transfer order",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "// The response is a React Server Components stream; the line starting '1:{' holds the result.",
+                  "const line = pm.response.text().split(\"\\n\").find(l => l.startsWith(\"1:{\")); // dev builds add other \"1:\" debug lines",
+                  "pm.test(\"action returned a result\", () => pm.expect(line, \"no result line\").to.be.a(\"string\"));",
+                  "const result = JSON.parse(line.slice(2));",
+                  "pm.test(\"order created (or a clear business error)\", () => pm.expect(result.orderId || result.error).to.be.ok);",
+                  "if (result.orderId) pm.collectionVariables.set(\"orderId\", result.orderId);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/checkout",
+            "header": [
+              {
+                "key": "Next-Action",
+                "value": "{{placeOrderActionId}}"
+              },
+              {
+                "key": "Accept",
+                "value": "text/x-component"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "_1_recipientName",
+                  "value": "API Test Buyer",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_phoneNumber",
+                  "value": "0771234567",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_address",
+                  "value": "12 Galle Road",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_city",
+                  "value": "Colombo",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_paymentMethod",
+                  "value": "BANK_TRANSFER",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_items",
+                  "value": "[{\"productId\":\"{{productId}}\",\"size\":\"{{productSize}}\",\"quantity\":1,\"price\":{{productPrice}}}]",
+                  "type": "text"
+                },
+                {
+                  "key": "0",
+                  "value": "[{},\"$K1\"]",
+                  "type": "text"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "Price sent by the client is not trusted",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const line = pm.response.text().split(\"\\n\").find(l => l.startsWith(\"1:{\")); // dev builds add other \"1:\" debug lines",
+                  "const result = JSON.parse(line.slice(2));",
+                  "pm.test(\"no order is created at the fake price\", () => pm.expect(result.orderId).to.be.undefined);",
+                  "pm.test(\"server reports the changed price\", () => pm.expect(result.problems).to.be.an(\"array\").that.is.not.empty);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/checkout",
+            "header": [
+              {
+                "key": "Next-Action",
+                "value": "{{placeOrderActionId}}"
+              },
+              {
+                "key": "Accept",
+                "value": "text/x-component"
+              }
+            ],
+            "body": {
+              "mode": "formdata",
+              "formdata": [
+                {
+                  "key": "_1_recipientName",
+                  "value": "API Test Buyer",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_phoneNumber",
+                  "value": "0771234567",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_address",
+                  "value": "12 Galle Road",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_city",
+                  "value": "Colombo",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_paymentMethod",
+                  "value": "BANK_TRANSFER",
+                  "type": "text"
+                },
+                {
+                  "key": "_1_items",
+                  "value": "[{\"productId\":\"{{productId}}\",\"size\":\"{{productSize}}\",\"quantity\":1,\"price\":1}]",
+                  "type": "text"
+                },
+                {
+                  "key": "0",
+                  "value": "[{},\"$K1\"]",
+                  "type": "text"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "3. Access control",
+      "item": [
+        {
+          "name": "Buyer cannot download the admin shipments CSV",
+          "protocolProfileBehavior": {
+            "followRedirects": false
+          },
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"not served as CSV\", () => pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").to.not.include(\"text/csv\"));",
+                  "pm.test(\"redirected away\", () => pm.expect(pm.response.code).to.be.oneOf([302, 303, 307, 308]));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "url": "{{baseUrl}}/admin/shipments/export"
+          }
+        },
+        {
+          "name": "Cron job refuses requests without the secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"401 Unauthorised\", () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/cron"
+          }
+        },
+        {
+          "name": "Cron job runs with the secret",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"200 OK\", () => pm.response.to.have.status(200));",
+                  "const r = pm.response.json();",
+                  "pm.test(\"reports what it did\", () => pm.expect(r).to.have.all.keys(\"reminded\", \"expired\", \"tokensDeleted\"));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "url": "{{baseUrl}}/api/cron",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{cronSecret}}"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000"
+    },
+    {
+      "key": "buyerEmail",
+      "value": "buyer@mivo.lk"
+    },
+    {
+      "key": "buyerPassword",
+      "value": "password123"
+    },
+    {
+      "key": "cronSecret",
+      "value": "SET_TO_YOUR_CRON_SECRET"
+    },
+    {
+      "key": "placeOrderActionId",
+      "value": "PASTE_FROM_SERVER_REFERENCE_MANIFEST"
+    },
+    {
+      "key": "productId",
+      "value": "PASTE_A_PRODUCT_ID"
+    },
+    {
+      "key": "productSize",
+      "value": "M"
+    },
+    {
+      "key": "productPrice",
+      "value": "6450"
+    },
+    {
+      "key": "csrfToken",
+      "value": ""
+    },
+    {
+      "key": "orderId",
+      "value": ""
+    }
+  ]
+}

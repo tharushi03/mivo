@@ -1,0 +1,31 @@
+Story,Acceptance Criterion,Requirement,Test Cases,Automated,Risk,Status
+US-01,AC1,Only logged-in buyers with a confirmed email can order,TC-02,Yes,R1,Covered
+US-01,AC2,Total = database prices + LKR 400 per boutique package,TC-01,Yes,R2,Covered
+US-01,AC3,Changed price or stock stops the order and shows what changed,TC-03,Yes,R2,Covered
+US-01,AC4,Confirmation shows MIVO bank details total and reference,TC-01,Yes,,Covered
+US-01,AC5,Only real JPG/PNG/WebP slips up to 5 MB are accepted,"TC-04, TC-05",No,R6,Covered
+US-01,AC5,Slip visible only to its buyer and admins,TC-06,No,R1,Covered
+US-01,AC6,Boutiques not told to ship before payment is verified,TC-07,No,,Covered
+US-01,AC7,Stock reserved on order and returned on cancel,"TC-01, TC-11",Partly,R4,Covered
+US-02,AC1,Courier list shows only couriers with a MIVO COD account,TC-09,No,R3,Covered
+US-02,AC2,Info box shows MIVO account reference and COD amount,TC-09,No,R3,Covered
+US-02,AC3,Boutique must confirm booking on MIVO's account,TC-09,No,R3,Covered
+US-02,AC4,Server refuses non-COD courier for COD package,TC-10,No,R3,Covered
+US-02,AC5,Boutique cannot dispatch another boutique's package,TC-14,No,R1,Partly covered (tested via tracking edit)
+US-02,AC6,Buyer emailed courier and tracking on dispatch,TC-09,No,,Covered
+US-03,AC1,Only admins can verify payments,TC-07,No,,Covered
+US-03,AC2,Verify marks Paid and emails each boutique its own items,TC-07,No,,Covered
+US-03,AC3,Verifying twice has no extra effect,TC-08,No,R2,Covered
+US-03,AC4,Cancelled order cannot be verified,—,No,,Gap: add test case
+US-03,AC5,Verification recorded in the activity log,TC-07,No,,Covered
+US-04,AC1,Cancel button shown only before any dispatch,"TC-11, TC-12",No,R5,Covered
+US-04,AC2,Server refuses cancel after dispatch,TC-12,No,R5,Covered
+US-04,AC3,Cancel returns stock and emails boutiques,TC-11,No,R4,Covered
+US-04,AC4,Paid order cancel creates a refund record,TC-11,No,R2,Covered
+US-04,AC5,Buyer cannot cancel another buyer's order,—,No,R1,Gap: add test case
+US-05,AC1,Tracking editable only while Dispatched,"TC-13, TC-14",No,,Covered
+US-05,AC2,Only owning boutique or admin can edit,TC-14,No,R1,Covered
+US-05,AC3,COD courier change limited to MIVO COD couriers,TC-10,No,R3,Partly covered (dispatch only)
+US-05,AC4,Change emails buyer; no change sends nothing,TC-13,No,,Covered
+US-05,AC5,Tracking normalised and validated,TC-13,No,,Partly covered
+"Not traced to a story",,"Admin cannot pay a boutique twice (payouts)",TC-15,No,R2,Covered (add a payout user story)

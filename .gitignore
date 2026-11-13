@@ -46,3 +46,10 @@ next-env.d.ts
 
 # Local email previews (when SMTP is not configured)
 /.outbox/
+
+# QA portfolio: dependencies, generated reports and test logins
+/qa-portfolio/**/node_modules/
+/qa-portfolio/reports/*
+!/qa-portfolio/reports/README.md
+/qa-portfolio/ui-tests/.auth/
+/qa-portfolio/ui-tests/test-results/

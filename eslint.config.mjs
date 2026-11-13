@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // QA portfolio: separate project with its own dependencies and checks.
+    "qa-portfolio/**",
   ]),
 ]);
 
