@@ -12,7 +12,7 @@ The traceability matrix (`traceability-matrix.csv`) maps every AC to test cases.
 **So that** I can buy without paying cash at the door.
 
 **Acceptance criteria**
-- **AC1:** Only a logged-in buyer with a confirmed email can place an order. Guests are sent to login.
+- **AC1:** Anyone can place an order. Guests (no account) pay by bank transfer only and open their order through a secret link emailed to them; logged-in buyers need a confirmed email and may also choose cash on delivery. *(Changed in Phase 18, guest checkout.)*
 - **AC2:** The order total = item prices from the database (not the cart) + LKR 400 per boutique package.
 - **AC3:** If a price or stock level changed since the item was added to the cart, the order is
   not placed, and the buyer is shown what changed.

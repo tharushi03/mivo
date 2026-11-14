@@ -70,6 +70,7 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
         createdAt: orders.createdAt,
         paidAt: orders.paidAt,
         recipientName: orders.recipientName,
+        referrerSellerId: orders.referrerSellerId,
         shippingAddress: orders.shippingAddress,
         phoneNumber: orders.phoneNumber,
         paymentMethod: orders.paymentMethod,
@@ -155,6 +156,11 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
                     <p className="font-mono font-semibold">{orderRef(s.orderId)}</p>
+                    {s.referrerSellerId === profile.id && (
+                      <span className="mt-1 inline-block rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-medium text-accent-hover">
+                        From your link
+                      </span>
+                    )}
                     <p className="text-xs text-text-secondary">Ordered {formatDateTime(s.createdAt)}</p>
                   </div>
                   <div className="flex items-center gap-2">

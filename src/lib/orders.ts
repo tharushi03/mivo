@@ -1,30 +1,47 @@
-import { and, asc, desc, eq } from "drizzle-orm";
+import { and, asc, desc, eq, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { couriers, orderItems, orders, products, refunds, sellerProfiles, shipments, users } from "@/db/schema";
+import { isValidGuestKey } from "@/lib/guest-orders";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** One order with its items, only if it belongs to `buyerId`. */
 export async function getBuyerOrder(orderId: string, buyerId: string) {
-  return getOrderWithItems(orderId, buyerId);
+  return getOrderWithItems(orderId, { buyerId });
 }
 
+/** A guest order opened through its secret link. Null if the key is wrong or it isn't a guest order. */
+export async function getGuestOrder(orderId: string, key: string) {
+  if (!UUID.test(orderId) || !isValidGuestKey(orderId, key)) return null;
+  return getOrderWithItems(orderId, { guest: true });
+}
+
+/** Who may see an order: its account, or (after the link's key was checked) its guest. */
+export type OrderOwner = { buyerId: string } | { guest: true };
+
 /**
- * One order with its items and the buyer's account details. With `buyerId`, only
- * returns the order if it belongs to that buyer. Callers without `buyerId` must
+ * One order with its items and the buyer's details (account, or guest email). With
+ * `owner`, only returns the order if it belongs to them. Callers without `owner` must
  * check access themselves (e.g. admin only).
  */
-export async function getOrderWithItems(orderId: string, buyerId?: string) {
+export async function getOrderWithItems(orderId: string, owner?: OrderOwner) {
   if (!UUID.test(orderId)) return null;
 
+  const ownedBy = !owner ? undefined : "buyerId" in owner ? eq(orders.buyerId, owner.buyerId) : isNull(orders.buyerId);
   const [row] = await db
-    .select({ order: orders, buyerName: users.name, buyerEmail: users.email })
+    .select({
+      order: orders,
+      buyerName: sql<string>`coalesce(${users.name}, ${orders.recipientName})`,
+      buyerEmail: sql<string>`coalesce(${users.email}, ${orders.guestEmail})`,
+      referrerSlug: sql<string | null>`(select r.slug from seller_profiles r where r.id = ${orders.referrerSellerId})`,
+      referrerName: sql<string | null>`(select r.shop_name from seller_profiles r where r.id = ${orders.referrerSellerId})`,
+    })
     .from(orders)
-    .innerJoin(users, eq(orders.buyerId, users.id))
-    .where(buyerId ? and(eq(orders.id, orderId), eq(orders.buyerId, buyerId)) : eq(orders.id, orderId))
+    .leftJoin(users, eq(orders.buyerId, users.id))
+    .where(and(eq(orders.id, orderId), ownedBy))
     .limit(1);
   if (!row) return null;
-  const order = { ...row.order, buyerName: row.buyerName, buyerEmail: row.buyerEmail };
+  const order = { ...row.order, buyerName: row.buyerName, buyerEmail: row.buyerEmail, referrerSlug: row.referrerSlug, referrerName: row.referrerName };
 
   const items = await db
     .select({

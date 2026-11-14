@@ -20,6 +20,8 @@ import { revalidatePath, updateTag } from "next/cache";
 import { and, eq } from "drizzle-orm";
 import { db } from "@/db";
 import { couriers, orders, refunds, sellerProfiles, shipments } from "@/db/schema";
+import { deletePrivateImage } from "@/lib/storage";
+import { SLIP_REJECT_REASONS, type SlipRejectReason } from "@/lib/slip-reasons";
 import { requireAdmin, requireSeller, requireUser } from "@/lib/dal";
 import { PRODUCTS_TAG } from "@/lib/catalog";
 import { normaliseTracking } from "@/lib/shipments";
@@ -31,6 +33,7 @@ import { fromCents } from "@/lib/pricing";
 import { refreshOrderPages } from "@/lib/revalidate-orders";
 import {
   notifyBuyerPaymentVerified,
+  notifyBuyerSlipRejected,
   notifyBuyerShipmentDispatched,
   notifyBuyerTrackingUpdated,
   notifyLater,
@@ -104,6 +107,45 @@ export async function verifyPayment(_prev: ActionResult, formData: FormData): Pr
   notifyLater("payment verified (buyer)", () => notifyBuyerPaymentVerified(orderId));
   notifyLater("new order (sellers)", () => notifySellersOfNewOrder(orderId)); // now they can ship it
   await audit(admin.id, "verify_payment", { type: "order", id: orderId }, `Verified the bank transfer for ${orderRef(orderId)}`);
+  return { ok: true };
+}
+
+/**
+ * Admin rejects an uploaded bank slip (no matching payment, no order number, wrong
+ * amount, unreadable...). The slip is removed, the buyer sees the reason, gets an email
+ * and can upload a new one. The order stays open: it is cancelled automatically if no
+ * new slip arrives within SLIP_REJECTED_GRACE_HOURS. The slip's fingerprint and
+ * reference are kept, so the same slip on another order is still flagged.
+ */
+export async function rejectSlip(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
+  const admin = await requireAdmin();
+  const orderId = readId(formData, "orderId");
+  if (!orderId) return { error: "Invalid order." };
+  const code = String(formData.get("reason") ?? "") as SlipRejectReason;
+  if (!(code in SLIP_REJECT_REASONS)) return { error: "Choose a reason." };
+  const note = String(formData.get("note") ?? "").trim().replace(/\s+/g, " ").slice(0, 120);
+  if (code === "OTHER" && note.length < 5) return { error: "Write a short reason for the buyer." };
+  const reason = [SLIP_REJECT_REASONS[code], note].filter(Boolean).join(" ").slice(0, 200);
+
+  const oldSlip = await db.transaction(async (tx) => {
+    const [o] = await tx
+      .select({ slip: orders.paymentSlipUrl, method: orders.paymentMethod, payment: orders.paymentStatus, status: orders.orderStatus })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .for("update");
+    if (!o || !o.slip || o.method !== "BANK_TRANSFER" || o.payment !== "PENDING" || o.status !== "PENDING") return null;
+    await tx
+      .update(orders)
+      .set({ paymentSlipUrl: null, slipRejectedAt: new Date(), slipRejectReason: reason })
+      .where(eq(orders.id, orderId));
+    return o.slip;
+  });
+  if (!oldSlip) return { error: "This slip can't be rejected (already verified, replaced, cancelled or removed)." };
+
+  await deletePrivateImage(oldSlip);
+  refreshOrderPages(orderId);
+  notifyLater("slip rejected (buyer)", () => notifyBuyerSlipRejected(orderId));
+  await audit(admin.id, "reject_slip", { type: "order", id: orderId }, `Rejected the bank slip for ${orderRef(orderId)}: ${reason}`);
   return { ok: true };
 }
 

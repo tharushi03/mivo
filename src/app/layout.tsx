@@ -18,6 +18,8 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: { default: "MIVO", template: "%s · MIVO" },
   description: "Curated clothing from Sri Lankan boutiques",
+  // Absolute URLs for link previews (WhatsApp, Instagram, Facebook) of shared products.
+  metadataBase: new URL(process.env.APP_URL ?? "http://localhost:3000"),
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

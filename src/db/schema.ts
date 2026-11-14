@@ -107,6 +107,10 @@ export const sellerProfiles = pgTable("seller_profiles", {
     .unique(),
   shopName: varchar("shop_name", { length: 255 }).notNull(),
   instagramUrl: varchar("instagram_url", { length: 255 }),
+  // The boutique's own shop link: mivo.lk/s/<slug>. Lowercase letters, digits and dashes.
+  slug: varchar("slug", { length: 60 }).unique(),
+  // Shown to buyers as "Ask on WhatsApp" (Sri Lankan number, stored as 0771234567).
+  whatsappNumber: varchar("whatsapp_number", { length: 20 }),
   // Where MIVO sends this boutique's payouts. Set by the seller on /seller/settings.
   bankName: varchar("bank_name", { length: 100 }),
   bankBranch: varchar("bank_branch", { length: 100 }),
@@ -163,9 +167,12 @@ export const orders = pgTable(
   "orders",
   {
     id: uuid("id").defaultRandom().primaryKey(),
-    buyerId: uuid("buyer_id")
-      .references(() => users.id)
-      .notNull(),
+    // NULL = guest order (no account). Guests pay by bank transfer only, get their
+    // emails at guestEmail, and open the order through a secret link (lib/guest-orders.ts).
+    buyerId: uuid("buyer_id").references(() => users.id),
+    guestEmail: varchar("guest_email", { length: 255 }),
+    // The boutique whose own shop link the buyer came from. NULL = found on the MIVO website.
+    referrerSellerId: uuid("referrer_seller_id").references(() => sellerProfiles.id),
     totalAmount: numeric("total_amount", { precision: 10, scale: 2 }).notNull(), // items + delivery
     deliveryFee: numeric("delivery_fee", { precision: 10, scale: 2 }).default("0").notNull(), // sum of the shipments' fees
 
@@ -178,6 +185,15 @@ export const orders = pgTable(
     paymentMethod: paymentMethodEnum("payment_method").notNull(),
     paymentStatus: paymentStatusEnum("payment_status").default("PENDING").notNull(),
     paymentSlipUrl: text("payment_slip_url"), // Bank transfer slip
+    // What the buyer typed when uploading: the transaction number printed on their bank receipt.
+    slipReference: varchar("slip_reference", { length: 40 }),
+    // SHA-256 of the slip file: the same image uploaded for two orders is flagged to the admin.
+    slipHash: varchar("slip_hash", { length: 64 }),
+    slipUploadedAt: timestamp("slip_uploaded_at", { withTimezone: true }),
+    // Admin rejected the last slip (no matching payment, no order number, unreadable...).
+    // The buyer sees the reason and can upload a new one.
+    slipRejectedAt: timestamp("slip_rejected_at", { withTimezone: true }),
+    slipRejectReason: varchar("slip_reject_reason", { length: 200 }),
 
     // Status: derived from the shipments (each boutique ships its own package).
     orderStatus: orderStatusEnum("order_status").default("PENDING").notNull(),
@@ -193,7 +209,18 @@ export const orders = pgTable(
 
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [index("orders_buyer_idx").on(t.buyerId), index("orders_status_idx").on(t.orderStatus)],
+  (t) => [
+    index("orders_buyer_idx").on(t.buyerId),
+    index("orders_status_idx").on(t.orderStatus),
+    index("orders_guest_email_idx").on(t.guestEmail),
+    index("orders_referrer_idx").on(t.referrerSellerId),
+    index("orders_slip_hash_idx").on(t.slipHash),
+    index("orders_slip_reference_idx").on(t.slipReference),
+    // Every order can be reached: an account, or a guest email for the secret link.
+    check("orders_buyer_or_guest", sql`${t.buyerId} is not null or ${t.guestEmail} is not null`),
+    // No cash on delivery without an account (fake COD orders cost MIVO the delivery fee).
+    check("orders_guest_bank_transfer_only", sql`${t.buyerId} is not null or ${t.paymentMethod} = 'BANK_TRANSFER'`),
+  ],
 );
 
 // ---------- 5. Order Items ----------

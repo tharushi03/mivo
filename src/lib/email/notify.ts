@@ -2,15 +2,18 @@
 // the change is committed) and sends its emails. Call them through notifyLater()
 // from a Server Action, so the buyer/seller/admin never waits for the mail server.
 import { after } from "next/server";
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { couriers, orderItems, orders, products, refunds, sellerProfiles, shipments, users } from "@/db/schema";
-import { orderRef } from "@/lib/payments";
+import { getPlatformBankDetails, orderRef, paymentDeadline } from "@/lib/payments";
+import { buyerOrderPath } from "@/lib/guest-orders";
 import { formatDateTime } from "@/lib/format";
 import { fromCents, toCents } from "@/lib/pricing";
 import { getCodCouriers } from "@/lib/couriers";
 import { sendEmail } from "./send";
 import {
+  buyerSlipRejectedEmail,
+  buyerOrderPlacedEmail,
   buyerOrderCancelledEmail,
   buyerPackageDispatchedEmail,
   buyerPackageResolvedEmail,
@@ -24,6 +27,22 @@ import {
 } from "./templates";
 
 type Item = { title: string; size: string; quantity: number };
+
+// The buyer of an order, for queries that LEFT JOIN users on orders.buyerId:
+// an account's email and name, or a guest's email and the recipient name.
+const buyer = {
+  email: sql<string>`coalesce(${users.email}, ${orders.guestEmail})`,
+  name: sql<string>`coalesce(${users.name}, ${orders.recipientName})`,
+  guest: sql<boolean>`(${orders.buyerId} is null)`,
+  // Orders from a boutique's own link carry its name on the buyer's emails.
+  brand: sql<string | null>`(select r.shop_name from seller_profiles r where r.id = ${orders.referrerSellerId})`,
+};
+
+/** orderPath + brand for a buyer email template. */
+const buyerLink = (orderId: string, b: { guest: boolean; brand: string | null }) => ({
+  orderPath: buyerOrderPath(orderId, b.guest),
+  brand: b.brand,
+});
 
 /** One boutique's items in an order, plus their total in cents. */
 async function itemsOf(orderId: string, sellerId: string) {
@@ -87,6 +106,44 @@ export async function notifySellersOfNewOrder(orderId: string) {
   );
 }
 
+/** The buyer's receipt when the order is placed, with the link to the order (and bank details). */
+export async function notifyBuyerOrderPlaced(orderId: string) {
+  const [o] = await db
+    .select({
+      email: buyer.email,
+      name: buyer.name,
+      guest: buyer.guest,
+      brand: buyer.brand,
+      total: orders.totalAmount,
+      method: orders.paymentMethod,
+      createdAt: orders.createdAt,
+    })
+    .from(orders)
+    .leftJoin(users, eq(orders.buyerId, users.id))
+    .where(eq(orders.id, orderId));
+  if (!o) return;
+  const items = await db
+    .select({ title: orderItems.productTitle, size: orderItems.selectedSize, quantity: orderItems.quantity })
+    .from(orderItems)
+    .where(eq(orderItems.orderId, orderId));
+  const bankTransfer = o.method === "BANK_TRANSFER";
+  await sendEmail(
+    buyerOrderPlacedEmail({
+      ...buyerLink(orderId, o),
+      to: o.email,
+      name: o.name,
+      orderId,
+      orderRef: orderRef(orderId),
+      items,
+      total: o.total,
+      paymentMethod: o.method,
+      bank: bankTransfer ? getPlatformBankDetails() : null,
+      deadline: bankTransfer ? formatDateTime(paymentDeadline(o.createdAt)) : null,
+      guest: o.guest,
+    }),
+  );
+}
+
 /** Trigger 2: one boutique's package left with the courier. */
 export async function notifyBuyerShipmentDispatched(shipmentId: string) {
   const [s] = await db
@@ -97,14 +154,16 @@ export async function notifyBuyerShipmentDispatched(shipmentId: string) {
       tracking: shipments.trackingNumber,
       courier: couriers.name,
       shopName: sellerProfiles.shopName,
-      email: users.email,
-      name: users.name,
+      email: buyer.email,
+      name: buyer.name,
+      guest: buyer.guest,
+      brand: buyer.brand,
       paymentMethod: orders.paymentMethod,
       paymentStatus: orders.paymentStatus,
     })
     .from(shipments)
     .innerJoin(orders, eq(shipments.orderId, orders.id))
-    .innerJoin(users, eq(orders.buyerId, users.id))
+    .leftJoin(users, eq(orders.buyerId, users.id))
     .innerJoin(sellerProfiles, eq(shipments.sellerId, sellerProfiles.id))
     .leftJoin(couriers, eq(shipments.courierId, couriers.id))
     .where(eq(shipments.id, shipmentId));
@@ -116,6 +175,7 @@ export async function notifyBuyerShipmentDispatched(shipmentId: string) {
   ]);
   await sendEmail(
     buyerPackageDispatchedEmail({
+      ...buyerLink(s.orderId, s),
       to: s.email,
       name: s.name,
       orderId: s.orderId,
@@ -133,14 +193,47 @@ export async function notifyBuyerShipmentDispatched(shipmentId: string) {
 /** Trigger 3: the admin confirmed the bank transfer. */
 export async function notifyBuyerPaymentVerified(orderId: string) {
   const [o] = await db
-    .select({ id: orders.id, email: users.email, name: users.name, totalAmount: orders.totalAmount })
+    .select({ id: orders.id, email: buyer.email, name: buyer.name, guest: buyer.guest, brand: buyer.brand, totalAmount: orders.totalAmount })
     .from(orders)
-    .innerJoin(users, eq(orders.buyerId, users.id))
+    .leftJoin(users, eq(orders.buyerId, users.id))
     .where(eq(orders.id, orderId))
     .limit(1);
   if (!o) return;
   await sendEmail(
-    buyerPaymentVerifiedEmail({ to: o.email, name: o.name, orderId: o.id, orderRef: orderRef(o.id), amount: o.totalAmount }),
+    buyerPaymentVerifiedEmail({ ...buyerLink(o.id, o), to: o.email, name: o.name, orderId: o.id, orderRef: orderRef(o.id), amount: o.totalAmount }),
+  );
+}
+
+/** The admin rejected the buyer's bank slip: tell them why and ask for a new one. */
+export async function notifyBuyerSlipRejected(orderId: string) {
+  const [o] = await db
+    .select({
+      id: orders.id,
+      email: buyer.email,
+      name: buyer.name,
+      guest: buyer.guest,
+      brand: buyer.brand,
+      totalAmount: orders.totalAmount,
+      reason: orders.slipRejectReason,
+      createdAt: orders.createdAt,
+      rejectedAt: orders.slipRejectedAt,
+    })
+    .from(orders)
+    .leftJoin(users, eq(orders.buyerId, users.id))
+    .where(eq(orders.id, orderId))
+    .limit(1);
+  if (!o || !o.reason) return; // a new slip arrived meanwhile
+  await sendEmail(
+    buyerSlipRejectedEmail({
+      ...buyerLink(o.id, o),
+      to: o.email,
+      name: o.name,
+      orderId: o.id,
+      orderRef: orderRef(o.id),
+      amount: o.totalAmount,
+      reason: o.reason,
+      deadline: formatDateTime(paymentDeadline(o.createdAt, o.rejectedAt)),
+    }),
   );
 }
 
@@ -153,9 +246,9 @@ export async function notifyOrderCancelled(
   d: { by: "BUYER" | "ADMIN"; notifySellerIds: string[]; dispatchedSellerIds: string[]; refundDue: boolean },
 ) {
   const [o] = await db
-    .select({ email: users.email, name: users.name, reason: orders.cancelReason })
+    .select({ email: buyer.email, name: buyer.name, guest: buyer.guest, brand: buyer.brand, reason: orders.cancelReason })
     .from(orders)
-    .innerJoin(users, eq(orders.buyerId, users.id))
+    .leftJoin(users, eq(orders.buyerId, users.id))
     .where(eq(orders.id, orderId))
     .limit(1);
   if (!o) return;
@@ -179,7 +272,7 @@ export async function notifyOrderCancelled(
     : [];
 
   await Promise.all([
-    sendEmail(buyerOrderCancelledEmail({ to: o.email, name: o.name, orderId, orderRef: ref, by: d.by, reason: o.reason, refund: refund?.amount ?? null })),
+    sendEmail(buyerOrderCancelledEmail({ ...buyerLink(orderId, o), to: o.email, name: o.name, orderId, orderRef: ref, by: d.by, reason: o.reason, refund: refund?.amount ?? null })),
     ...sellers.map(async (s) => {
       const { items } = await itemsOf(orderId, s.id);
       return sendEmail(
@@ -197,18 +290,21 @@ export async function notifyBuyerTrackingUpdated(shipmentId: string) {
       tracking: shipments.trackingNumber,
       courier: couriers.name,
       shopName: sellerProfiles.shopName,
-      email: users.email,
-      name: users.name,
+      email: buyer.email,
+      name: buyer.name,
+      guest: buyer.guest,
+      brand: buyer.brand,
     })
     .from(shipments)
     .innerJoin(orders, eq(shipments.orderId, orders.id))
-    .innerJoin(users, eq(orders.buyerId, users.id))
+    .leftJoin(users, eq(orders.buyerId, users.id))
     .innerJoin(sellerProfiles, eq(shipments.sellerId, sellerProfiles.id))
     .leftJoin(couriers, eq(shipments.courierId, couriers.id))
     .where(eq(shipments.id, shipmentId));
   if (!s || !s.tracking || !s.courier) return;
   await sendEmail(
     buyerTrackingUpdatedEmail({
+      ...buyerLink(s.orderId, s),
       to: s.email,
       name: s.name,
       orderId: s.orderId,
@@ -233,12 +329,14 @@ export async function notifyPackageResolved(
       reason: shipments.resolutionNote,
       shopName: sellerProfiles.shopName,
       sellerUserId: sellerProfiles.userId,
-      buyerEmail: users.email,
-      buyerName: users.name,
+      buyerEmail: buyer.email,
+      buyerName: buyer.name,
+      guest: buyer.guest,
+      brand: buyer.brand,
     })
     .from(shipments)
     .innerJoin(orders, eq(shipments.orderId, orders.id))
-    .innerJoin(users, eq(orders.buyerId, users.id))
+    .leftJoin(users, eq(orders.buyerId, users.id))
     .innerJoin(sellerProfiles, eq(shipments.sellerId, sellerProfiles.id))
     .where(eq(shipments.id, shipmentId));
   if (!s) return;
@@ -263,6 +361,7 @@ export async function notifyPackageResolved(
       ),
     sendEmail(
       buyerPackageResolvedEmail({
+        ...buyerLink(s.orderId, s),
         to: s.buyerEmail,
         name: s.buyerName,
         orderId: s.orderId,
@@ -279,13 +378,13 @@ export async function notifyPackageResolved(
 /** Unpaid bank transfer, ~24 hours old: remind the buyer of the deadline. */
 export async function notifyPaymentReminder(orderId: string, deadline: Date) {
   const [o] = await db
-    .select({ email: users.email, name: users.name, amount: orders.totalAmount })
+    .select({ email: buyer.email, name: buyer.name, guest: buyer.guest, brand: buyer.brand, amount: orders.totalAmount })
     .from(orders)
-    .innerJoin(users, eq(orders.buyerId, users.id))
+    .leftJoin(users, eq(orders.buyerId, users.id))
     .where(eq(orders.id, orderId));
   if (!o) return;
   await sendEmail(
-    buyerPaymentReminderEmail({ to: o.email, name: o.name, orderId, orderRef: orderRef(orderId), amount: o.amount, deadline: formatDateTime(deadline) }),
+    buyerPaymentReminderEmail({ ...buyerLink(orderId, o), to: o.email, name: o.name, orderId, orderRef: orderRef(orderId), amount: o.amount, deadline: formatDateTime(deadline) }),
   );
 }
 

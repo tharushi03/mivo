@@ -7,6 +7,7 @@ import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { sellerProfiles, users } from "@/db/schema";
 import { signIn } from "@/auth";
+import { freeSlug } from "@/lib/shops";
 import { blockedFor, clientIp, hit, minutesText } from "@/lib/rate-limit";
 import { notifyLater } from "@/lib/email/notify";
 import { sendConfirmationEmail } from "@/lib/email-verification";
@@ -79,7 +80,10 @@ export async function registerSeller(_prev: SellerSignupState, formData: FormDat
     if (!user) return { fieldErrors: { email: "An account with this email already exists. Log in, or use a different email for your boutique." } };
 
     // New boutiques start unverified: products stay hidden until MIVO approves them.
-    await tx.insert(sellerProfiles).values({ userId: user.id, shopName, instagramUrl, isVerified: false });
+    // Their shop link (mivo.lk/s/<slug>), changeable later in Store settings. The unique
+    // index settles a race with another sign-up of the same name (the transaction fails).
+    const slug = await freeSlug(shopName, tx);
+    await tx.insert(sellerProfiles).values({ userId: user.id, shopName, slug, instagramUrl, isVerified: false });
     return null;
   });
   if (result) return { ...result, values };

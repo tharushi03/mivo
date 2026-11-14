@@ -25,11 +25,30 @@ export function appUrl(pathname: string) {
 
 type Item = { title: string; size: string; quantity: number };
 
+/**
+ * Every buyer email: where the order opens (a guest's secret /track link, or the
+ * account's /order page) and the boutique brand for orders from its own link.
+ */
+type BuyerLink = { orderPath?: string; brand?: string | null };
+
 const NL = "\n";
 const itemLines = (items: Item[]) => items.map((i) => `- ${i.title}, size ${i.size} x ${i.quantity}`).join(NL);
 
 /** Wraps content in the MIVO email shell. `bodyHtml` must already be escaped. */
-function layout(opts: { preheader: string; heading: string; bodyHtml: string; cta?: { label: string; href: string } }) {
+function layout(opts: {
+  preheader: string;
+  heading: string;
+  bodyHtml: string;
+  cta?: { label: string; href: string };
+  /** Boutique name shown instead of MIVO (orders from the boutique's own link). */
+  brand?: string | null;
+}) {
+  const brand = opts.brand
+    ? `<span style="font-size:20px;font-weight:700">${esc(opts.brand)}</span><br><span style="font-size:11px;color:${C.grey};letter-spacing:1px">POWERED BY MIVO</span>`
+    : `<span style="font-size:22px;font-weight:700;letter-spacing:5px">MIVO</span>`;
+  const footer = opts.brand
+    ? `${esc(opts.brand)} · Secure checkout and delivery by MIVO<br>This is an automatic message about your order.`
+    : `MIVO · Curated clothing from Sri Lankan boutiques<br>This is an automatic message about your MIVO order.`;
   const button = opts.cta
     ? `<p style="margin:28px 0 8px"><a href="${esc(opts.cta.href)}" style="display:inline-block;background:${C.accent};color:#ffffff;text-decoration:none;font-weight:600;padding:12px 22px;border-radius:8px">${esc(opts.cta.label)}</a></p>`
     : "";
@@ -39,13 +58,13 @@ function layout(opts: { preheader: string; heading: string; bodyHtml: string; ct
 <span style="display:none;max-height:0;overflow:hidden;opacity:0">${esc(opts.preheader)}</span>
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:${C.cream};padding:24px 12px"><tr><td align="center">
 <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;background:#ffffff;border:1px solid ${C.muted};border-radius:12px">
-<tr><td style="padding:24px 28px;border-bottom:3px solid ${C.accent}"><span style="font-size:22px;font-weight:700;letter-spacing:5px">MIVO</span></td></tr>
+<tr><td style="padding:24px 28px;border-bottom:3px solid ${C.accent}">${brand}</td></tr>
 <tr><td style="padding:28px;font-size:15px;line-height:1.55">
 <h1 style="margin:0 0 16px;font-size:21px;line-height:1.3">${esc(opts.heading)}</h1>
 ${opts.bodyHtml}
 ${button}
 </td></tr>
-<tr><td style="padding:16px 28px;border-top:1px solid ${C.muted};font-size:12px;color:${C.grey}">MIVO · Curated clothing from Sri Lankan boutiques<br>This is an automatic message about your MIVO order.</td></tr>
+<tr><td style="padding:16px 28px;border-top:1px solid ${C.muted};font-size:12px;color:${C.grey}">${footer}</td></tr>
 </table></td></tr></table></body></html>`;
 }
 
@@ -140,6 +159,70 @@ export function sellerNewOrderEmail(d: {
   };
 }
 
+// ---------------------------------------------------------------- Buyer, order placed (receipt)
+
+export function buyerOrderPlacedEmail(
+  d: {
+    to: string;
+    name: string;
+    orderId: string;
+    orderRef: string;
+    items: Item[];
+    total: string;
+    paymentMethod: "COD" | "BANK_TRANSFER";
+    /** Bank transfer only: where to pay, and by when. */
+    bank: { bankName: string; branch: string; accountName: string; accountNumber: string } | null;
+    deadline: string | null;
+    /** No account: the link in this email is the only way back to the order. */
+    guest: boolean;
+  } & BuyerLink,
+): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
+  const bankHtml = d.bank
+    ? box(
+        `Bank: <strong>${esc(d.bank.bankName)}</strong> (${esc(d.bank.branch)})<br>` +
+          `Account name: <strong>${esc(d.bank.accountName)}</strong><br>` +
+          `Account number: <strong style="font-family:monospace">${esc(d.bank.accountNumber)}</strong><br>` +
+          `Amount: <strong>${esc(lkr(d.total))}</strong><br>` +
+          `Reference: <strong style="font-family:monospace">${esc(d.orderRef)}</strong>`,
+      ) +
+      `<p style="margin:12px 0 0;font-size:14px;color:#b42318"><strong>Important: write ${esc(d.orderRef)} on the bank slip or in the transfer remarks.</strong> Slips without the order number will be rejected.</p>` +
+      `<p style="margin:12px 0 0;font-size:14px">After transferring, upload a photo of your bank slip on your order page${d.deadline ? ` by <strong>${esc(d.deadline)}</strong>` : ""}. Unpaid orders are cancelled automatically after that.</p>`
+    : `<p style="margin:12px 0 0">Cash on delivery: please keep <strong>${esc(lkr(d.total))}</strong> ready for the courier.</p>`;
+  const guestHtml = d.guest
+    ? `<p style="margin:16px 0 0;font-size:13px;color:${C.grey}">Keep this email: the button below opens your order, no account needed. Don't forward it, as anyone with the link can see your order.</p>`
+    : "";
+  return {
+    to: d.to,
+    subject: `Order received: ${d.orderRef}`,
+    html: layout({
+      brand: d.brand,
+      preheader: d.bank ? `Transfer ${lkr(d.total)} with reference ${d.orderRef}.` : `Total ${lkr(d.total)}, cash on delivery.`,
+      heading: "Thank you for your order!",
+      bodyHtml:
+        `<p style="margin:0 0 8px">Hi ${esc(d.name)}, we've received your order <strong>${esc(d.orderRef)}</strong>.</p>` +
+        itemTable(d.items) +
+        `<p style="margin:0">Total (incl. delivery): <strong>${esc(lkr(d.total))}</strong></p>` +
+        bankHtml +
+        guestHtml,
+      cta: { label: d.bank ? "Pay and upload slip" : "View my order", href: link },
+    }),
+    text: [
+      "Thank you for your order!",
+      "",
+      `Hi ${d.name}, we've received your order ${d.orderRef}.`,
+      itemLines(d.items),
+      `Total (incl. delivery): ${lkr(d.total)}`,
+      d.bank
+        ? `${NL}Pay by bank transfer: ${d.bank.bankName} (${d.bank.branch}), ${d.bank.accountName}, ${d.bank.accountNumber}. Reference: ${d.orderRef} (write it on the slip or in the transfer remarks; slips without it will be rejected).${d.deadline ? ` Upload your slip by ${d.deadline}.` : ""}`
+        : `${NL}Cash on delivery: keep ${lkr(d.total)} ready for the courier.`,
+      d.guest ? `${NL}Keep this email: the link opens your order, no account needed. Don't forward it.` : "",
+      "",
+      `Your order: ${link}`,
+    ].join(NL),
+  };
+}
+
 // ---------------------------------------------------------------- Trigger 2: buyer, one package dispatched
 
 export function buyerPackageDispatchedEmail(d: {
@@ -155,12 +238,13 @@ export function buyerPackageDispatchedEmail(d: {
   packageCount: number;
   /** Cash to pay this courier (COD only). */
   codAmount: string | null;
-}): Email {
-  const link = appUrl(`/order/${d.orderId}`);
+} & BuyerLink): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
   return {
     to: d.to,
     subject: `Package from ${d.shopName} is on the way! (${d.orderRef})`,
     html: layout({
+      brand: d.brand,
       preheader: `Courier: ${d.courier}, Tracking: ${d.tracking}`,
       heading: `Package from ${d.shopName} is on the way!`,
       bodyHtml:
@@ -193,12 +277,13 @@ export function buyerPackageDispatchedEmail(d: {
 
 // ---------------------------------------------------------------- Trigger 3: buyer, payment verified
 
-export function buyerPaymentVerifiedEmail(d: { to: string; name: string; orderId: string; orderRef: string; amount: string }): Email {
-  const link = appUrl(`/order/${d.orderId}`);
+export function buyerPaymentVerifiedEmail(d: { to: string; name: string; orderId: string; orderRef: string; amount: string } & BuyerLink): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
   return {
     to: d.to,
     subject: `Payment verified for your MIVO order (${d.orderRef})`,
     html: layout({
+      brand: d.brand,
       preheader: "Your payment has been verified and your order is being prepared.",
       heading: "Payment verified",
       bodyHtml:
@@ -216,6 +301,43 @@ export function buyerPaymentVerifiedEmail(d: { to: string; name: string; orderId
       `Amount received: ${lkr(d.amount)}`,
       "",
       `View your order: ${link}`,
+    ].join(NL),
+  };
+}
+
+// ---------------------------------------------------------------- Buyer, bank slip rejected
+
+export function buyerSlipRejectedEmail(
+  d: { to: string; name: string; orderId: string; orderRef: string; amount: string; reason: string; deadline: string } & BuyerLink,
+): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
+  return {
+    to: d.to,
+    subject: `Please send a new payment slip for your MIVO order (${d.orderRef})`,
+    html: layout({
+      brand: d.brand,
+      preheader: "We couldn't confirm your payment from the slip you sent.",
+      heading: "We couldn't confirm your payment",
+      bodyHtml:
+        `<p style="margin:0 0 8px">Hi ${esc(d.name)}, we checked the bank slip you uploaded and couldn't confirm your payment.</p>` +
+        box(`Reason: <strong>${esc(d.reason)}</strong><br>Order: <strong>${esc(d.orderRef)}</strong><br>Amount due: <strong>${esc(lkr(d.amount))}</strong>`) +
+        `<p style="margin:12px 0 0;font-size:14px">If you have paid, please upload a clear photo of the slip that shows the order number <strong>${esc(d.orderRef)}</strong>, together with the bank's transaction reference number. If you haven't paid yet, please pay with <strong>${esc(d.orderRef)}</strong> as the reference.</p>` +
+        `<p style="margin:12px 0 0;font-size:14px">Please do this by <strong>${esc(d.deadline)}</strong>. After that the order is cancelled and the items go back on sale.</p>`,
+      cta: { label: "Upload a new slip", href: link },
+    }),
+    text: [
+      "We couldn't confirm your payment",
+      "",
+      `Hi ${d.name}, we checked the bank slip you uploaded and couldn't confirm your payment.`,
+      "",
+      `Reason: ${d.reason}`,
+      `Order: ${d.orderRef}`,
+      `Amount due: ${lkr(d.amount)}`,
+      "",
+      `If you have paid, please upload a clear photo of the slip that shows the order number ${d.orderRef}, with the bank's transaction reference number. If you haven't paid yet, please pay with ${d.orderRef} as the reference.`,
+      `Please do this by ${d.deadline}. After that the order is cancelled and the items go back on sale.`,
+      "",
+      `Upload a new slip: ${link}`,
     ].join(NL),
   };
 }
@@ -317,8 +439,8 @@ export function buyerOrderCancelledEmail(d: {
   reason: string | null;
   /** Amount MIVO will refund for this cancellation, or null if nothing was paid. */
   refund: string | null;
-}): Email {
-  const link = appUrl(`/order/${d.orderId}`);
+} & BuyerLink): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
   const intro =
     d.by === "BUYER"
       ? "your order has been cancelled as you requested."
@@ -332,6 +454,7 @@ export function buyerOrderCancelledEmail(d: {
     to: d.to,
     subject: `Your MIVO order ${d.orderRef} is cancelled`,
     html: layout({
+      brand: d.brand,
       preheader: money,
       heading: "Order cancelled",
       bodyHtml:
@@ -353,12 +476,13 @@ export function buyerTrackingUpdatedEmail(d: {
   shopName: string;
   courier: string;
   tracking: string;
-}): Email {
-  const link = appUrl(`/order/${d.orderId}`);
+} & BuyerLink): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
   return {
     to: d.to,
     subject: `Updated tracking for your package from ${d.shopName} (${d.orderRef})`,
     html: layout({
+      brand: d.brand,
       preheader: `Courier: ${d.courier}, Tracking: ${d.tracking}`,
       heading: "Updated tracking number",
       bodyHtml:
@@ -426,8 +550,8 @@ export function buyerPackageResolvedEmail(d: {
   kind: "CANCELLED" | "RETURNED";
   reason: string;
   refund: string | null;
-}): Email {
-  const link = appUrl(`/order/${d.orderId}`);
+} & BuyerLink): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
   const what =
     d.kind === "CANCELLED"
       ? `the package from ${d.shopName} in your order ${d.orderRef} was cancelled. The rest of your order isn't affected.`
@@ -439,6 +563,7 @@ export function buyerPackageResolvedEmail(d: {
     to: d.to,
     subject: `${d.kind === "CANCELLED" ? "Part of your order was cancelled" : "Your return was received"} (${d.orderRef})`,
     html: layout({
+      brand: d.brand,
       preheader: money,
       heading: d.kind === "CANCELLED" ? "Part of your order was cancelled" : "Return received",
       bodyHtml: `<p style="margin:0 0 8px">Hi ${esc(d.name)}, ${esc(what)}</p>` + box(`Reason: ${esc(d.reason)}<br>${esc(money)}`),
@@ -457,12 +582,13 @@ export function buyerPaymentReminderEmail(d: {
   orderRef: string;
   amount: string;
   deadline: string;
-}): Email {
-  const link = appUrl(`/order/${d.orderId}`);
+} & BuyerLink): Email {
+  const link = appUrl(d.orderPath ?? `/order/${d.orderId}`);
   return {
     to: d.to,
     subject: `Reminder: complete your payment for ${d.orderRef}`,
     html: layout({
+      brand: d.brand,
       preheader: `Please transfer ${lkr(d.amount)} by ${d.deadline} or the order will be cancelled.`,
       heading: "Complete your payment",
       bodyHtml:

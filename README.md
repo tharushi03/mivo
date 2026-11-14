@@ -60,6 +60,24 @@ and the COD cash each should bring in, for matching against courier statements.
 Login, sign-up, order and password-reset rate limits are kept in memory. That is correct for a single
 container; if you ever scale to several, move them to Redis or Postgres (`src/lib/rate-limit.ts`).
 
+### 8. Shop links and guest checkout
+- Boutiques share `https://<your-domain>/s/<slug>` (their shop) and `/p/<code>` (one product). Set
+  `APP_URL` to the real https domain: the links boutiques copy, and the WhatsApp/Instagram previews,
+  are built from it.
+- Guests (no account) can order, **bank transfer only**. They open their order through
+  `/track/<order id>/<key>`, where the key is made from `AUTH_SECRET`. **Changing `AUTH_SECRET`
+  breaks every guest's order link** (and logs everyone out), so keep it fixed.
+- Guest limits: 5 orders per network per hour, 5 per email per hour, and at most 2 unpaid guest
+  orders per email or phone number. The network limit relies on Traefik's `X-Real-Ip` header.
+
+### 9. Checking bank slips
+**Admin → Orders → Slips to check** lists uploaded slips, the longest-waiting first. Each opens a review page:
+order and expected amount on the left, the slip (zoom / rotate) and the buyer's bank transaction number on
+the right, with **Verify Payment** and **Reject Slip** underneath. Buyers must give that transaction number and
+confirm they wrote the order number on the slip. A slip image or transaction number already used on another
+order is flagged in red. Always find the money in the bank statement before verifying: a slip is only a picture.
+A rejected buyer is emailed the reason and gets 48 more hours to send a new slip before the order is cancelled.
+
 ## Money rules (summary)
 
 - Buyers pay MIVO (bank transfer, or cash to the courier for COD). Delivery is LKR 400 per boutique package.

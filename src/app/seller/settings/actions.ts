@@ -1,10 +1,12 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, updateTag } from "next/cache";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { sellerProfiles } from "@/db/schema";
 import { requireSeller } from "@/lib/dal";
+import { PRODUCTS_TAG } from "@/lib/catalog";
+import { SLUG, normalizePhone } from "@/lib/shop-links";
 
 type Field = "bankName" | "bankBranch" | "bankAccountName" | "bankAccountNumber" | "confirmAccountNumber";
 
@@ -63,4 +65,44 @@ export async function saveBankDetails(_prev: BankFormState, formData: FormData):
   }
 
   return { ok: true, values: { ...values, bankAccountNumber: accountNumber, confirmAccountNumber: accountNumber } };
+}
+
+// ---------------------------------------------------------------- Shop link + WhatsApp
+
+export type ShopLinkState = {
+  ok?: boolean;
+  error?: string;
+  fieldErrors?: Partial<Record<"slug" | "whatsapp", string>>;
+  values?: { slug: string; whatsapp: string };
+};
+
+/** Saves the boutique's shop link (mivo.lk/s/<slug>) and its WhatsApp number for buyers. */
+export async function saveShopLink(_prev: ShopLinkState, formData: FormData): Promise<ShopLinkState> {
+  const { profile } = await requireSeller();
+  if (!profile) return { error: "Your account has no boutique profile. Please contact MIVO support." };
+
+  const values = {
+    slug: String(formData.get("slug") ?? "").trim().toLowerCase().slice(0, 60),
+    whatsapp: String(formData.get("whatsapp") ?? "").trim().slice(0, 30),
+  };
+  const whatsapp = values.whatsapp ? normalizePhone(values.whatsapp) : null;
+  const fieldErrors: ShopLinkState["fieldErrors"] = {};
+  if (!SLUG.test(values.slug)) fieldErrors.slug = "Use 3 to 50 lowercase letters, numbers and dashes, e.g. nethmi-collection.";
+  if (values.whatsapp && !whatsapp) fieldErrors.whatsapp = "Enter a Sri Lankan mobile number, e.g. 077 123 4567.";
+  if (Object.keys(fieldErrors).length > 0) return { fieldErrors, values };
+
+  try {
+    await db.update(sellerProfiles).set({ slug: values.slug, whatsappNumber: whatsapp }).where(eq(sellerProfiles.id, profile.id));
+  } catch (err) {
+    // seller_profiles_slug_unique: another boutique has this link.
+    if ((err as { cause?: { code?: string } }).cause?.code === "23505" || (err as { code?: string }).code === "23505") {
+      return { fieldErrors: { slug: "Another boutique already uses this link. Try a different one." }, values };
+    }
+    throw err;
+  }
+  // The old link stops working straight away; shop pages and product pages show the new one.
+  updateTag(PRODUCTS_TAG);
+  revalidatePath("/seller/settings");
+  revalidatePath("/seller/dashboard");
+  return { ok: true, values: { slug: values.slug, whatsapp: whatsapp ?? "" } };
 }

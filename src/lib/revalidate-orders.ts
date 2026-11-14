@@ -3,6 +3,7 @@ import { revalidatePath } from "next/cache";
 /** Every page that shows an order, its packages or money derived from them. */
 export function refreshOrderPages(orderId: string) {
   revalidatePath("/admin/orders");
+  revalidatePath(`/admin/orders/${orderId}`);
   revalidatePath("/admin/shipments");
   revalidatePath("/admin/payouts");
   revalidatePath("/seller/orders");

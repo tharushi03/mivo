@@ -8,15 +8,16 @@ import { maskAccount } from "@/lib/banks";
 import { EmptyState } from "@/components/empty-state";
 import { PAGE_SIZE, Pagination, parsePage } from "@/components/pagination";
 
-export const metadata: Metadata = { title: "My payouts", robots: { index: false } };
+export const metadata: Metadata = { title: "My earnings", robots: { index: false } };
 
 export default function SellerPayoutsPage({ searchParams }: PageProps<"/seller/payouts">) {
   return (
     <main className="mx-auto max-w-5xl p-4 sm:p-8">
-      <h1 className="text-3xl font-bold">My payouts</h1>
+      <h1 className="text-3xl font-bold">My earnings</h1>
       <p className="mb-6 mt-1 text-text-secondary">
-        Money MIVO has sent you. Items become payable {PAYOUT_HOLD_DAYS} days after delivery (the customer&apos;s return
-        window). For prepaid orders, the delivery fee you paid the courier is repaid with your payout.
+        Your earnings are your sales minus MIVO&apos;s commission. They become available {PAYOUT_HOLD_DAYS} days after
+        delivery (the customer&apos;s return window), and MIVO sends them to your bank account on the next payout day. For
+        prepaid orders, the delivery fee you paid the courier is repaid with your payout.
       </p>
       <Suspense fallback={<div className="h-96 animate-pulse rounded-xl border border-border bg-surface" />}>
         <Payouts searchParams={searchParams} />
@@ -54,7 +55,7 @@ async function Payouts({ searchParams }: Pick<PageProps<"/seller/payouts">, "sea
 
       <div className="mb-8 grid grid-cols-1 gap-4 sm:grid-cols-3">
         <div className="rounded-xl border border-accent/40 bg-accent/5 p-5">
-          <p className="text-sm text-text-secondary">Awaiting payout</p>
+          <p className="text-sm text-text-secondary">Available for next payout</p>
           <p className={`mt-1 text-2xl font-bold ${owed && owed.netCents < 0 ? "text-error" : ""}`}>{formatLKR((owed?.netCents ?? 0) / 100)}</p>
           <p className="mt-0.5 text-xs text-text-secondary">
             {owed
@@ -63,7 +64,7 @@ async function Payouts({ searchParams }: Pick<PageProps<"/seller/payouts">, "sea
           </p>
         </div>
         <div className="rounded-xl border border-border bg-surface p-5">
-          <p className="text-sm text-text-secondary">On hold (return window)</p>
+          <p className="text-sm text-text-secondary">Coming soon (return window)</p>
           <p className="mt-1 text-2xl font-bold">{formatLKR((held?.netCents ?? 0) / 100)}</p>
           <p className="mt-0.5 text-xs text-text-secondary">
             {held?.nextReleaseAt ? `Next becomes payable ${formatDate(held.nextReleaseAt)}` : "No recent deliveries waiting"}

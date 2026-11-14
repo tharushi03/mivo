@@ -3,6 +3,8 @@ import { expect, type Locator, type Page } from "@playwright/test";
 export type Delivery = { name: string; phone: string; address: string; city: string };
 
 export class CheckoutPage {
+  /** Guests only: where the receipt and the secret order link are sent. */
+  readonly email: Locator;
   readonly recipientName: Locator;
   readonly phone: Locator;
   readonly address: Locator;
@@ -13,6 +15,7 @@ export class CheckoutPage {
   readonly error: Locator;
 
   constructor(private readonly page: Page) {
+    this.email = page.getByLabel("Email");
     this.recipientName = page.getByLabel("Recipient name");
     this.phone = page.getByLabel("Phone number");
     this.address = page.getByLabel("Address");
@@ -38,6 +41,17 @@ export class CheckoutPage {
 
   async payByBankTransfer() {
     await this.bankTransfer.check();
+  }
+
+  /**
+   * Guest: submits and waits for the secret order link /track/<id>/<key>.
+   * Returns the order id and the link.
+   */
+  async submitAsGuestAndWaitForOrder() {
+    await this.placeOrder.click();
+    await this.page.waitForURL(/\/track\/[0-9a-f-]{36}\/[A-Za-z0-9_-]{32}$/);
+    const [, , id] = new URL(this.page.url()).pathname.split("/");
+    return { orderId: id, link: new URL(this.page.url()).pathname };
   }
 
   /** Submits and waits for the order confirmation page. Returns the new order's id. */

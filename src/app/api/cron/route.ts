@@ -4,18 +4,19 @@
 // 1. Unpaid bank-transfer orders (no slip) get one reminder email after 24 hours.
 // 2. After 72 hours they are cancelled and their stock goes back on sale.
 //    Orders with an uploaded slip are never expired: the admin must check the slip.
+//    If the admin rejected a slip, the buyer gets 48 more hours to send a new one.
 // 3. Expired password-reset links are deleted.
 //
 // Safe to run any number of times, or twice at once: every step is a conditional
 // update or runs under the order lock.
 import { timingSafeEqual } from "node:crypto";
 import { revalidateTag } from "next/cache";
-import { and, eq, gt, isNull, lt } from "drizzle-orm";
+import { and, eq, gt, isNull, lt, or } from "drizzle-orm";
 import { db } from "@/db";
 import { orders, verificationTokens } from "@/db/schema";
 import { PRODUCTS_TAG } from "@/lib/catalog";
 import { cancelOrderTx } from "@/lib/fulfilment";
-import { PAYMENT_DEADLINE_HOURS, PAYMENT_REMINDER_HOURS, paymentDeadline } from "@/lib/payments";
+import { PAYMENT_DEADLINE_HOURS, PAYMENT_REMINDER_HOURS, SLIP_REJECTED_GRACE_HOURS, paymentDeadline } from "@/lib/payments";
 import { refreshOrderPages } from "@/lib/revalidate-orders";
 import { notifyOrderCancelled, notifyPaymentReminder } from "@/lib/email/notify";
 
@@ -62,7 +63,13 @@ export async function POST(request: Request) {
   const overdue = await db
     .select({ id: orders.id })
     .from(orders)
-    .where(and(unpaid, lt(orders.createdAt, new Date(now - PAYMENT_DEADLINE_HOURS * HOUR))))
+    .where(
+      and(
+        unpaid,
+        lt(orders.createdAt, new Date(now - PAYMENT_DEADLINE_HOURS * HOUR)),
+        or(isNull(orders.slipRejectedAt), lt(orders.slipRejectedAt, new Date(now - SLIP_REJECTED_GRACE_HOURS * HOUR))),
+      ),
+    )
     .limit(200);
   const expired: string[] = [];
   for (const { id } of overdue) {

@@ -15,6 +15,9 @@ export class LoginPage {
 
   async goto() {
     await this.page.goto("/login");
+    // The page streams: a placeholder form shows first and is swapped for the real one.
+    // Wait for the swap, or a fill could land in the placeholder that is about to vanish.
+    await expect(this.email).toHaveCount(1);
     await expect(this.submit).toBeVisible();
   }
 

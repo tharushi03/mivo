@@ -3,6 +3,8 @@ import type { Metadata } from "next";
 import { requireSeller } from "@/lib/dal";
 import { formatDateTime } from "@/lib/format";
 import { BankDetailsForm } from "./bank-details-form";
+import { ShopLinkForm } from "./shop-link-form";
+import { appUrl } from "@/lib/email/templates";
 
 export const metadata: Metadata = { title: "Store settings", robots: { index: false } };
 
@@ -10,7 +12,7 @@ export default function SellerSettingsPage() {
   return (
     <main className="mx-auto max-w-2xl p-4 sm:p-8">
       <h1 className="text-3xl font-bold">Store settings</h1>
-      <p className="mb-8 mt-1 text-text-secondary">Where MIVO sends the money from your sales.</p>
+      <p className="mb-8 mt-1 text-text-secondary">Your shop link, and where MIVO sends the money from your sales.</p>
       <Suspense fallback={<div className="h-[28rem] animate-pulse rounded-xl border border-border bg-surface" />}>
         <Settings />
       </Suspense>
@@ -29,6 +31,14 @@ async function Settings() {
   }
 
   return (
+    <>
+    <section className="mb-8 rounded-xl border border-border bg-surface p-6 sm:p-8">
+      <h2 className="text-lg font-bold">Shop link</h2>
+      <p className="mb-6 mt-1 text-sm text-text-secondary">
+        Share this link on Instagram, TikTok, Facebook and WhatsApp. It shows only your boutique.
+      </p>
+      <ShopLinkForm initial={{ slug: profile.slug ?? "", whatsapp: profile.whatsappNumber ?? "" }} origin={appUrl("")} />
+    </section>
     <section className="rounded-xl border border-border bg-surface p-6 sm:p-8">
       <h2 className="text-lg font-bold">Bank details for payouts</h2>
       <p className="mb-6 mt-1 text-sm text-text-secondary">
@@ -45,5 +55,6 @@ async function Settings() {
         }}
       />
     </section>
+    </>
   );
 }

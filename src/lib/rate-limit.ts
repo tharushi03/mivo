@@ -27,6 +27,9 @@ export const POLICIES = {
   register: { max: 10, windowMs: 60 * MIN, blockMs: 60 * MIN },
   // Orders placed by one account (stops stock being locked up by mass orders).
   order: { max: 5, windowMs: 60 * MIN, blockMs: 60 * MIN },
+  // Guest orders (no account): per network and per email address.
+  guestOrderIp: { max: 5, windowMs: 60 * MIN, blockMs: 60 * MIN },
+  guestOrderEmail: { max: 5, windowMs: 60 * MIN, blockMs: 60 * MIN },
   // "Forgot password" requests: per network, and per email (so nobody can flood one inbox).
   resetIp: { max: 10, windowMs: 60 * MIN, blockMs: 60 * MIN },
   resetEmail: { max: 3, windowMs: 60 * MIN, blockMs: 60 * MIN },

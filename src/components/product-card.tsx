@@ -3,11 +3,12 @@ import Link from "next/link";
 import type { StorefrontProduct } from "@/lib/catalog";
 import { formatLKR } from "@/lib/format";
 
-export function ProductCard({ product, priority }: { product: StorefrontProduct; priority?: boolean }) {
+/** `href` overrides the link, e.g. a boutique page links through its short product links. */
+export function ProductCard({ product, priority, href }: { product: StorefrontProduct; priority?: boolean; href?: string }) {
   const soldOut = product.stockQuantity <= 0;
 
   return (
-    <Link href={`/product/${product.id}`} className="group block">
+    <Link href={href ?? `/product/${product.id}`} className="group block">
       <div className="relative aspect-[3/4] overflow-hidden rounded-xl bg-muted">
         <Image
           src={product.imageUrl}

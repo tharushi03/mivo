@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
-import { count, desc, eq, inArray, sql } from "drizzle-orm";
+import { asc, count, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { couriers, orderItems, orders, products, refunds, sellerProfiles, shipments, users } from "@/db/schema";
 import { requireAdmin } from "@/lib/dal";
@@ -14,6 +14,7 @@ import { EmptyState } from "@/components/empty-state";
 import { PAGE_SIZE, Pagination, parsePage } from "@/components/pagination";
 import { cancelOrder, cancelShipment, markShipmentDelivered, restockShipment, returnShipment, settleRefund, verifyPayment } from "@/app/actions/admin-orders";
 import { ShipmentStatusBadge } from "@/components/shipment-status-badge";
+import { slipToCheck } from "@/lib/slip-review";
 
 export const metadata: Metadata = { title: "Admin · Orders" };
 
@@ -43,38 +44,47 @@ async function OrdersTable({ searchParams }: Pick<PageProps<"/admin/orders">, "s
   const sp = await searchParams;
   // ?status=REFUNDS lists orders with money MIVO still has to send back.
   const refundsTab = sp.status === "REFUNDS";
+  // ?status=SLIPS: uploaded bank slips waiting for verify / reject, the longest-waiting first.
+  const slipsTab = sp.status === "SLIPS";
   const filter = STATUSES.includes(sp.status as Status) ? (sp.status as Status) : null;
   const page = parsePage(sp.page);
   const hasPendingRefund = sql`exists (select 1 from ${refunds} where ${refunds.orderId} = ${orders.id} and ${refunds.status} = 'PENDING')`;
   const where = refundsTab
     ? hasPendingRefund
-    : filter
+    : slipsTab
+      ? slipToCheck
+      : filter
       ? eq(orders.orderStatus, filter)
       : undefined;
 
-  const [counts, [{ refundsDue }], list] = await Promise.all([
+  const [counts, [{ refundsDue }], [{ slipsWaiting }], list] = await Promise.all([
     db.select({ status: orders.orderStatus, n: count() }).from(orders).groupBy(orders.orderStatus),
     db.select({ refundsDue: count() }).from(orders).where(hasPendingRefund),
+    db.select({ slipsWaiting: count() }).from(orders).where(slipToCheck),
     db
       .select({
         id: orders.id,
         createdAt: orders.createdAt,
         recipientName: orders.recipientName,
-        buyerEmail: users.email,
+        buyerEmail: sql<string>`coalesce(${users.email}, ${orders.guestEmail})`,
+        isGuest: sql<boolean>`(${orders.buyerId} is null)`,
+        referrerName: sql<string | null>`(select r.shop_name from seller_profiles r where r.id = ${orders.referrerSellerId})`,
         phoneNumber: orders.phoneNumber,
         shippingAddress: orders.shippingAddress,
         totalAmount: orders.totalAmount,
         paymentMethod: orders.paymentMethod,
         paymentStatus: orders.paymentStatus,
         paymentSlipUrl: orders.paymentSlipUrl,
+        slipReference: orders.slipReference,
+        slipRejectedAt: orders.slipRejectedAt,
         orderStatus: orders.orderStatus,
         paidAt: orders.paidAt,
         cancelledBy: orders.cancelledBy,
       })
       .from(orders)
-      .innerJoin(users, eq(orders.buyerId, users.id))
+      .leftJoin(users, eq(orders.buyerId, users.id))
       .where(where)
-      .orderBy(desc(orders.createdAt), desc(orders.id))
+      .orderBy(...(slipsTab ? [asc(orders.slipUploadedAt), asc(orders.id)] : [desc(orders.createdAt), desc(orders.id)]))
       .limit(PAGE_SIZE)
       .offset((page - 1) * PAGE_SIZE),
   ]);
@@ -126,10 +136,11 @@ async function OrdersTable({ searchParams }: Pick<PageProps<"/admin/orders">, "s
 
   const countOf = (s: Status) => counts.find((c) => c.status === s)?.n ?? 0;
   const total = counts.reduce((s, c) => s + c.n, 0);
-  const filteredTotal = refundsTab ? refundsDue : filter ? countOf(filter) : total;
+  const filteredTotal = refundsTab ? refundsDue : slipsTab ? slipsWaiting : filter ? countOf(filter) : total;
   const pageHref = (p: number) => {
     const qs = new URLSearchParams();
     if (refundsTab) qs.set("status", "REFUNDS");
+    else if (slipsTab) qs.set("status", "SLIPS");
     else if (filter) qs.set("status", filter);
     if (p > 1) qs.set("page", String(p));
     const s = qs.toString();
@@ -139,7 +150,8 @@ async function OrdersTable({ searchParams }: Pick<PageProps<"/admin/orders">, "s
   return (
     <>
       <nav aria-label="Filter by status" className="mb-4 flex gap-2 overflow-x-auto pb-1">
-        <FilterTab href="/admin/orders" active={!filter && !refundsTab} label="All" n={total} />
+        <FilterTab href="/admin/orders" active={!filter && !refundsTab && !slipsTab} label="All" n={total} />
+        <FilterTab href="/admin/orders?status=SLIPS" active={slipsTab} label="Slips to check" n={slipsWaiting} />
         {STATUSES.map((s) => (
           <FilterTab key={s} href={`/admin/orders?status=${s}`} active={filter === s} label={STATUS_LABEL[s]} n={countOf(s)} />
         ))}
@@ -154,6 +166,8 @@ async function OrdersTable({ searchParams }: Pick<PageProps<"/admin/orders">, "s
             ? "There are no orders on this page."
             : refundsTab
               ? "No refunds are waiting."
+              : slipsTab
+              ? "No slips are waiting. New uploads appear here."
               : filter
               ? `No orders are currently "${STATUS_LABEL[filter]}".`
               : "Orders will appear here as soon as buyers check out."}
@@ -191,6 +205,12 @@ async function OrdersTable({ searchParams }: Pick<PageProps<"/admin/orders">, "s
                     <td className="px-4 py-3">
                       <div className="font-medium">{o.recipientName}</div>
                       <div className="text-xs text-text-secondary">{o.buyerEmail}</div>
+                      {o.isGuest && (
+                        <span className="mt-0.5 inline-block rounded-full bg-muted px-2 py-0.5 text-[11px] font-medium">Guest (no account)</span>
+                      )}
+                      {o.referrerName && (
+                        <div className="mt-0.5 text-[11px] text-accent-hover">Via {o.referrerName}&apos;s link</div>
+                      )}
                       <a href={`tel:${o.phoneNumber}`} className="text-xs text-accent hover:underline">
                         {o.phoneNumber}
                       </a>
@@ -292,16 +312,16 @@ async function OrdersTable({ searchParams }: Pick<PageProps<"/admin/orders">, "s
                       </div>
                       {o.paymentMethod === "BANK_TRANSFER" &&
                         (o.paymentSlipUrl ? (
-                          <a
-                            href={`/order/${o.id}/slip`}
-                            target="_blank"
-                            rel="noopener"
-                            className="mt-1 inline-block text-xs font-medium text-accent underline-offset-2 hover:underline"
-                          >
-                            View slip ↗
-                          </a>
+                          <div className="mt-1 text-xs font-medium text-success">
+                            Slip uploaded
+                            {o.slipReference && <div className="font-mono font-normal text-text-secondary">Ref {o.slipReference}</div>}
+                          </div>
                         ) : (
-                          o.paymentStatus === "PENDING" && <div className="mt-1 text-xs text-text-secondary">No slip yet</div>
+                          o.paymentStatus === "PENDING" && (
+                            <div className={`mt-1 text-xs ${o.slipRejectedAt ? "text-error" : "text-text-secondary"}`}>
+                              {o.slipRejectedAt ? "Slip rejected, waiting for a new one" : "No slip yet"}
+                            </div>
+                          )
                         ))}
                       {(refundsByOrder.get(o.id) ?? []).map((r) => (
                         <div key={r.id} className="mt-2 w-48 rounded-lg border border-border p-2 text-xs">
@@ -354,6 +374,19 @@ async function OrdersTable({ searchParams }: Pick<PageProps<"/admin/orders">, "s
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex w-44 flex-col items-start gap-2">
+                        {o.paymentMethod === "BANK_TRANSFER" && (o.paymentSlipUrl || awaitingPayment) && (
+                          // The review page: order details next to the slip, with Verify / Reject.
+                          <Link
+                            href={`/admin/orders/${o.id}`}
+                            className="inline-flex items-center gap-1.5 whitespace-nowrap rounded-md border border-accent px-3 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/10"
+                          >
+                            <svg aria-hidden="true" viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round">
+                              <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12Z" />
+                              <circle cx="12" cy="12" r="3" />
+                            </svg>
+                            {o.paymentSlipUrl && awaitingPayment && isOpen ? "Check Payment Slip" : o.paymentSlipUrl ? "View Payment Slip" : "Payment details"}
+                          </Link>
+                        )}
                         {awaitingPayment && isOpen && (
                           <ActionForm
                             action={verifyPayment}

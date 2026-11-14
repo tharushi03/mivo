@@ -9,7 +9,7 @@ export default function SellerLayout({ children }: LayoutProps<"/seller">) {
           { href: "/seller/dashboard", label: "Overview" },
           { href: "/seller/orders", label: "Orders" },
           { href: "/seller/products/new", label: "Add product" },
-          { href: "/seller/payouts", label: "My Payouts" },
+          { href: "/seller/payouts", label: "My Earnings" },
           { href: "/seller/settings", label: "Store Settings" },
         ]}
       />

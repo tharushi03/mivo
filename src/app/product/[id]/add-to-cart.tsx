@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useCart, type CartItem } from "@/store/cart";
 import { Toast } from "@/components/toast";
 
@@ -13,6 +14,7 @@ type Props = {
 
 export function AddToCart({ product, sizes }: Props) {
   const addItem = useCart((s) => s.addItem);
+  const router = useRouter();
   const [size, setSize] = useState(sizes.length === 1 ? sizes[0].size : "");
   const [qty, setQty] = useState(1);
   const [toast, setToast] = useState<{ text: string; ok: boolean } | null>(null);
@@ -46,6 +48,16 @@ export function AddToCart({ product, sizes }: Props) {
       });
       setQty(1);
     }
+  }
+
+  /** Straight to checkout with only this item. The cart is left as it is. */
+  function handleBuyNow() {
+    if (!size) {
+      setToast({ text: "Please choose a size first.", ok: false });
+      return;
+    }
+    const qs = new URLSearchParams({ buy: product.productId, size, qty: String(qty) });
+    router.push(`/checkout?${qs}`);
   }
 
   if (soldOut) {
@@ -118,13 +130,22 @@ export function AddToCart({ product, sizes }: Props) {
         </div>
       </div>
 
-      <button
-        type="button"
-        onClick={handleAdd}
-        className="w-full rounded-xl bg-accent py-4 font-semibold text-white transition-colors hover:bg-accent-hover"
-      >
-        Add to Cart
-      </button>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <button
+          type="button"
+          onClick={handleBuyNow}
+          className="w-full rounded-xl bg-accent py-4 font-semibold text-white transition-colors hover:bg-accent-hover"
+        >
+          Buy Now
+        </button>
+        <button
+          type="button"
+          onClick={handleAdd}
+          className="w-full rounded-xl border-2 border-accent py-4 font-semibold text-accent-hover transition-colors hover:bg-accent/10"
+        >
+          Add to Cart
+        </button>
+      </div>
 
       {toast && (
         <Toast tone={toast.ok ? "success" : "error"}>

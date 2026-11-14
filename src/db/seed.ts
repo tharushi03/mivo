@@ -26,6 +26,7 @@ async function seed() {
     .values({
       userId: seller.id,
       shopName: "Mivo Test Boutique",
+      slug: "mivo-test-boutique",
       instagramUrl: "https://instagram.com/mivotest",
       isVerified: true,
     })
@@ -38,6 +39,7 @@ async function seed() {
     .values({
       userId: pendingSeller.id,
       shopName: "Colombo Batik House",
+      slug: "colombo-batik-house",
       instagramUrl: "https://instagram.com/colombobatikhouse",
       isVerified: false,
     })

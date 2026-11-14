@@ -12,6 +12,7 @@ import { and, eq, inArray, isNull, ne, notInArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { orderItems, orders, productVariants, products, refunds, sellerAdjustments, shipments } from "@/db/schema";
 import { fromCents, toCents } from "@/lib/pricing";
+import { paymentDeadline } from "@/lib/payments";
 
 export type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
@@ -73,6 +74,8 @@ async function lockOrder(tx: Tx, orderId: string) {
       method: orders.paymentMethod,
       payment: orders.paymentStatus,
       slip: orders.paymentSlipUrl,
+      slipRejectedAt: orders.slipRejectedAt,
+      createdAt: orders.createdAt,
       total: orders.totalAmount,
     })
     .from(orders)
@@ -157,7 +160,8 @@ export async function cancelOrderTx(
   tx: Tx,
   orderId: string,
   by:
-    | { role: "BUYER"; buyerId: string }
+    // buyerId null = a guest order; the caller has checked the key of its secret link.
+    | { role: "BUYER"; buyerId: string | null }
     // onlyIfUnpaid: the payment-deadline job. Re-checked under the lock, so a slip
     // uploaded (or a payment verified) a moment ago always wins.
     | { role: "ADMIN"; reason?: string; onlyIfUnpaid?: boolean },
@@ -169,6 +173,9 @@ export async function cancelOrderTx(
   if (order.status === "DELIVERED") return { error: "This order was already delivered." };
   if (by.role === "ADMIN" && by.onlyIfUnpaid && (order.status !== "PENDING" || order.payment !== "PENDING" || order.slip)) {
     return { error: "Payment or slip received; not expiring." };
+  }
+  if (by.role === "ADMIN" && by.onlyIfUnpaid && paymentDeadline(order.createdAt, order.slipRejectedAt).getTime() > Date.now()) {
+    return { error: "Still within the time to send a new slip; not expiring." };
   }
 
   const pkgs = await tx.select({ sellerId: shipments.sellerId, status: shipments.status }).from(shipments).where(eq(shipments.orderId, orderId));
@@ -182,9 +189,11 @@ export async function cancelOrderTx(
   }
 
   // Money: COD is only collected on delivery, so nothing was paid. A bank transfer
-  // that MIVO verified, or whose slip was uploaded, may have reached MIVO: record a
-  // refund for whatever hasn't already been refunded package by package.
-  const mayHaveMoney = order.method === "BANK_TRANSFER" && (order.payment === "PAID" || Boolean(order.slip));
+  // that MIVO verified, or whose slip was uploaded (even one the admin rejected), may have
+  // reached MIVO: record a refund for whatever hasn't already been refunded package by
+  // package. If the money never came, the admin closes it with "Money never arrived".
+  const mayHaveMoney =
+    order.method === "BANK_TRANSFER" && (order.payment === "PAID" || Boolean(order.slip) || Boolean(order.slipRejectedAt));
   let refundDue = false;
   if (mayHaveMoney) {
     const [{ already }] = await tx

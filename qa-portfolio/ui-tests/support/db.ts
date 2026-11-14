@@ -46,16 +46,18 @@ export async function removeTestData(db: Client) {
   await db.query("begin");
   try {
     const buyers = `select id from users where email like '%' || $1`;
+    // Test orders: placed by a test account, or by a guest with a test email.
+    const testOrder = `(o.buyer_id in (${buyers}) or o.guest_email like '%' || $1)`;
     await db.query(
       `update product_variants v set stock = v.stock + t.qty
          from (select oi.product_id, oi.selected_size, sum(oi.quantity)::int as qty
                  from order_items oi join orders o on o.id = oi.order_id
-                where o.buyer_id in (${buyers}) and o.order_status <> 'CANCELLED'
+                where ${testOrder} and o.order_status <> 'CANCELLED'
                 group by oi.product_id, oi.selected_size) t
         where v.product_id = t.product_id and v.size = t.selected_size`,
       [TEST_DOMAIN],
     );
-    const orders = await db.query(`delete from orders where buyer_id in (${buyers})`, [TEST_DOMAIN]);
+    const orders = await db.query(`delete from orders o where ${testOrder}`, [TEST_DOMAIN]);
     const users = await db.query(`delete from users where email like '%' || $1`, [TEST_DOMAIN]);
     await db.query("commit");
     return { orders: orders.rowCount ?? 0, users: users.rowCount ?? 0 };

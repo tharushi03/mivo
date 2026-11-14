@@ -5,7 +5,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { placeOrder, type PlaceOrderState } from "@/app/actions/order";
-import { selectTotal, useCart, useCartHydrated } from "@/store/cart";
+import { useCart, useCartHydrated, type CartItem } from "@/store/cart";
 import { countBoutiques, deliveryFeeFor } from "@/lib/pricing";
 import { formatLKR } from "@/lib/format";
 import { EmptyState } from "@/components/empty-state";
@@ -17,38 +17,68 @@ function FieldError({ msg }: { msg?: string }) {
   return msg ? <p className="mt-1 text-xs text-error">{msg}</p> : null;
 }
 
-export function CheckoutForm({ defaultName, codAvailable }: { defaultName: string; codAvailable: boolean }) {
+/** The single item of a "Buy Now" checkout (the cart is left untouched). */
+export type BuyNowItem = CartItem;
+
+type Props = {
+  defaultName: string;
+  codAvailable: boolean;
+  /** No account: asks for an email, bank transfer only, plus the bot checks. */
+  guest: boolean;
+  /** Signed "form opened at" time (guests only). */
+  stamp?: string;
+  buyNow: BuyNowItem | null;
+  /** The Buy Now item is sold out or gone: explain, with a link back to the product. */
+  unavailable?: { href: string };
+};
+
+export function CheckoutForm({ defaultName, codAvailable, guest, stamp, buyNow, unavailable }: Props) {
   const router = useRouter();
   const hydrated = useCartHydrated();
-  const items = useCart((s) => s.items);
-  const subtotal = useCart(selectTotal);
+  const cartItems = useCart((s) => s.items);
+  // Buy Now checkout (its item may have just sold out: then buyNow is null but `unavailable` is set).
+  const buyNowMode = Boolean(buyNow || unavailable);
+  const items = buyNow ? [buyNow] : buyNowMode ? [] : cartItems;
+  const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
   const packages = countBoutiques(items);
   const delivery = deliveryFeeFor(packages);
   const [state, formAction, pending] = useActionState<PlaceOrderState, FormData>(placeOrder, {});
   const e = state.fieldErrors ?? {};
   const v = state.values ?? {};
 
-  // Success: clear the cart and go to the confirmation page.
+  // Success: clear the cart (not for Buy Now) and go to the order page.
   useEffect(() => {
     if (!state.orderId) return;
-    useCart.getState().clearCart();
-    router.replace(`/order/${state.orderId}`);
-  }, [state.orderId, router]);
+    if (!buyNowMode) useCart.getState().clearCart();
+    router.replace(state.orderUrl ?? `/order/${state.orderId}`);
+  }, [state.orderId, state.orderUrl, router, buyNowMode]);
 
   // Conflict: apply the server's fresh prices/stock to the cart.
   useEffect(() => {
-    if (!state.problems) return;
+    if (!state.problems || buyNowMode) return;
     const { syncProduct, removeItem } = useCart.getState();
     for (const p of state.problems) {
       if (p.fix.removeLine) removeItem(p.productId, p.size);
       else syncProduct(p.productId, p.size, p.fix);
     }
-  }, [state.problems]);
+  }, [state.problems, buyNowMode]);
 
-  if (!hydrated) return <div className="h-96 animate-pulse rounded-xl border border-border bg-surface" />;
+  if (!hydrated && !buyNowMode) return <div className="h-96 animate-pulse rounded-xl border border-border bg-surface" />;
 
   if (state.orderId) {
     return <p className="rounded-xl border border-border bg-surface p-8 text-center">Order placed! Redirecting…</p>;
+  }
+
+  if (unavailable) {
+    return (
+      <div className="rounded-xl border border-border bg-surface p-8 text-center">
+        <h2 className="text-lg font-bold">This item isn&apos;t available any more</h2>
+        <p className="mt-1 text-sm text-text-secondary">It may have just sold out in that size.</p>
+        <Link href={unavailable.href} className="mt-4 inline-block font-medium text-accent hover:underline">
+          Back to the product
+        </Link>
+      </div>
+    );
   }
 
   if (items.length === 0) {
@@ -66,6 +96,16 @@ export function CheckoutForm({ defaultName, codAvailable }: { defaultName: strin
   return (
     <form action={formAction} className="grid gap-8 pb-24 lg:grid-cols-[1fr_340px] lg:pb-0">
       <input type="hidden" name="items" value={payload} />
+      {guest && (
+        <>
+          <input type="hidden" name="stamp" value={stamp} />
+          {/* Bot trap: hidden from people (and screen readers); bots that fill every field are refused. */}
+          <div aria-hidden="true" className="absolute -left-[9999px] h-px w-px overflow-hidden">
+            <label htmlFor="website">Website</label>
+            <input id="website" name="website" type="text" tabIndex={-1} autoComplete="off" defaultValue="" />
+          </div>
+        </>
+      )}
 
       <div className="space-y-8">
         {state.error && (
@@ -77,6 +117,15 @@ export function CheckoutForm({ defaultName, codAvailable }: { defaultName: strin
 
         <fieldset className="space-y-4 rounded-xl border border-border bg-surface p-6">
           <legend className="px-1 text-lg font-bold">Delivery details</legend>
+
+          {guest && (
+            <div>
+              <label htmlFor="email" className="mb-1 block text-sm font-medium">Email</label>
+              <input id="email" name="email" type="email" defaultValue={v.email} autoComplete="email" placeholder="you@example.com" required className={input} />
+              <p className="mt-1 text-xs text-text-secondary">We&apos;ll send your receipt and the link to track your order here.</p>
+              <FieldError msg={e.email} />
+            </div>
+          )}
 
           <div>
             <label htmlFor="recipientName" className="mb-1 block text-sm font-medium">Recipient name</label>
@@ -117,7 +166,11 @@ export function CheckoutForm({ defaultName, codAvailable }: { defaultName: strin
               defaultChecked={!codAvailable || v.paymentMethod === "BANK_TRANSFER"}
             />
           </div>
-          {!codAvailable && <p className="mt-3 text-sm text-text-secondary">Cash on delivery isn&apos;t available right now.</p>}
+          {guest ? (
+            <p className="mt-3 text-sm text-text-secondary">Cash on delivery is available for customers with a MIVO account.</p>
+          ) : (
+            !codAvailable && <p className="mt-3 text-sm text-text-secondary">Cash on delivery isn&apos;t available right now.</p>
+          )}
           <FieldError msg={e.paymentMethod} />
         </fieldset>
       </div>
@@ -169,8 +222,11 @@ export function CheckoutForm({ defaultName, codAvailable }: { defaultName: strin
           <Link href="/terms" className="underline hover:text-accent">Terms</Link> (including returns) and{" "}
           <Link href="/privacy" className="underline hover:text-accent">Privacy Policy</Link>.
         </p>
-        <Link href="/cart" className="mt-3 block text-center text-sm text-text-secondary hover:text-accent">
-          Back to cart
+        <Link
+          href={buyNow ? `/product/${buyNow.productId}` : "/cart"}
+          className="mt-3 block text-center text-sm text-text-secondary hover:text-accent"
+        >
+          {buyNow ? "Back to the product" : "Back to cart"}
         </Link>
       </aside>
 

@@ -31,6 +31,17 @@ export async function requireUser(role?: Role) {
   return session.user;
 }
 
+/**
+ * The logged-in user, or null for a guest. A session that exists but is no longer
+ * valid (suspended, password reset) is handled exactly as in requireUser.
+ */
+export async function currentUser() {
+  await connection();
+  const session = await auth();
+  if (!session?.user) return null;
+  return requireUser();
+}
+
 export async function requireAdmin() {
   return requireUser("ADMIN");
 }

@@ -1,14 +1,17 @@
 "use server";
 
 import { revalidatePath, updateTag } from "next/cache";
-import { and, eq, gte, inArray, sql } from "drizzle-orm";
+import { cookies, headers } from "next/headers";
+import { and, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { couriers, orderItems, orders, productVariants, products, sellerProfiles, shipments, users } from "@/db/schema";
-import { requireUser } from "@/lib/dal";
+import { currentUser } from "@/lib/dal";
 import { PRODUCTS_TAG } from "@/lib/catalog";
 import { deliveryFeeFor, DELIVERY_FEE_PER_SHIPMENT, fromCents, toCents } from "@/lib/pricing";
-import { notifyLater, notifySellersOfNewOrder } from "@/lib/email/notify";
-import { blockedFor, hit, minutesText } from "@/lib/rate-limit";
+import { notifyBuyerOrderPlaced, notifyLater, notifySellersOfNewOrder } from "@/lib/email/notify";
+import { blockedFor, clientIp, hit, minutesText } from "@/lib/rate-limit";
+import { buyerOrderPath, checkFormStamp } from "@/lib/guest-orders";
+import { REF_COOKIE, normalizePhone } from "@/lib/shop-links";
 import { isEmailConfirmed } from "@/lib/email-verification";
 
 // ---------- Types shared with the checkout form ----------
@@ -23,10 +26,12 @@ export type CartProblem = {
   fix: { price?: number; available?: number; removeLine?: boolean };
 };
 
-type Field = "recipientName" | "phoneNumber" | "address" | "city" | "paymentMethod";
+type Field = "email" | "recipientName" | "phoneNumber" | "address" | "city" | "paymentMethod";
 
 export type PlaceOrderState = {
   orderId?: string;
+  /** Where to send the buyer: their account's order page, or a guest's secret link. */
+  orderUrl?: string;
   error?: string;
   fieldErrors?: Partial<Record<Field, string>>;
   problems?: CartProblem[];
@@ -36,6 +41,11 @@ export type PlaceOrderState = {
 
 /** Most cash-on-delivery orders one account can have open (not yet delivered) at once. */
 const MAX_OPEN_COD_ORDERS = 3;
+
+/** Most unpaid guest orders one email address or phone number can have at once (they hold stock). */
+const MAX_UNPAID_GUEST_ORDERS = 2;
+
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** A rule stops this order (shown to the buyer as is, nothing is saved). */
 class CheckoutRefused extends Error {}
@@ -49,13 +59,6 @@ class CheckoutConflict extends Error {
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_LINES = 50;
 const MAX_QTY_PER_LINE = 100;
-
-/** Sri Lankan numbers: 0771234567, 077 123 4567, +94771234567, 94771234567 -> "0771234567". */
-function normalizePhone(raw: string): string | null {
-  const digits = raw.replace(/[\s-]/g, "");
-  const m = digits.match(/^(?:\+?94|0)(\d{9})$/);
-  return m ? `0${m[1]}` : null;
-}
 
 function parseLines(raw: FormDataEntryValue | null): CheckoutLine[] | null {
   try {
@@ -83,27 +86,41 @@ function parseLines(raw: FormDataEntryValue | null): CheckoutLine[] | null {
 }
 
 export async function placeOrder(_prev: PlaceOrderState, formData: FormData): Promise<PlaceOrderState> {
-  const user = await requireUser(); // any logged-in user
+  // Logged-in buyer, or null for a guest (no account: bank transfer only).
+  const user = await currentUser();
+  const text = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max);
+  const ip = clientIp(await headers());
+  const guestEmail = user ? null : text("email", 255).toLowerCase();
+  const tooMany = (ms: number) => ({
+    error: `You've placed several orders in a short time. Please try again in ${minutesText(ms)}, or contact us if you need help.`,
+  });
 
-  // Order emails include the delivery address: make sure the address belongs to the buyer.
-  if (!(await isEmailConfirmed(user.id))) {
-    return { error: `Please confirm your email first: open the link we sent to ${user.email}. You can resend it from the top of this page.` };
-  }
-
-  // Stops one account (or a script) placing dozens of orders to lock up the stock.
-  const waitMs = blockedFor("order", user.id);
-  if (waitMs > 0) {
-    return { error: `You've placed several orders in a short time. Please try again in ${minutesText(waitMs)}, or contact us if you need help.` };
+  if (user) {
+    // Order emails include the delivery address: make sure the address belongs to the buyer.
+    if (!(await isEmailConfirmed(user.id))) {
+      return { error: `Please confirm your email first: open the link we sent to ${user.email}. You can resend it from the top of this page.` };
+    }
+    // Stops one account (or a script) placing dozens of orders to lock up the stock.
+    const waitMs = blockedFor("order", user.id);
+    if (waitMs > 0) return tooMany(waitMs);
+  } else {
+    // Bots: a hidden field people never see or fill, and a signed "form opened at" time
+    // (posting within 3 seconds, or replaying a form older than 6 hours, is refused).
+    if (text("website", 200) !== "" || !checkFormStamp(formData.get("stamp"))) {
+      return { error: "Something went wrong with the form. Please refresh the page and try again." };
+    }
+    const waitMs = Math.max(blockedFor("guestOrderIp", ip), guestEmail ? blockedFor("guestOrderEmail", guestEmail) : 0);
+    if (waitMs > 0) return tooMany(waitMs);
   }
 
   // ---------- 1. Validate the form ----------
-  const text = (k: string, max: number) => String(formData.get(k) ?? "").trim().slice(0, max);
   const recipientName = text("recipientName", 255);
   const address = text("address", 500);
   const city = text("city", 100);
   const phone = normalizePhone(text("phoneNumber", 30));
   const paymentMethod = formData.get("paymentMethod");
   const values = {
+    email: guestEmail ?? "",
     recipientName,
     phoneNumber: text("phoneNumber", 30),
     address,
@@ -112,11 +129,15 @@ export async function placeOrder(_prev: PlaceOrderState, formData: FormData): Pr
   };
 
   const fieldErrors: PlaceOrderState["fieldErrors"] = {};
+  if (guestEmail !== null && !EMAIL.test(guestEmail)) fieldErrors.email = "Enter your email. We'll send your order link and receipt there.";
   if (recipientName.length < 2) fieldErrors.recipientName = "Enter the recipient's name.";
   if (!phone) fieldErrors.phoneNumber = "Enter a valid Sri Lankan phone number, e.g. 077 123 4567.";
   if (address.length < 5) fieldErrors.address = "Enter the full delivery address.";
   if (city.length < 2) fieldErrors.city = "Enter the city or town.";
   if (paymentMethod !== "BANK_TRANSFER" && paymentMethod !== "COD") fieldErrors.paymentMethod = "Choose a payment method.";
+  // No cash on delivery without an account: a fake COD order costs MIVO the courier fee.
+  // (The database refuses it too: orders_guest_bank_transfer_only.)
+  else if (!user && paymentMethod === "COD") fieldErrors.paymentMethod = "Cash on delivery needs a MIVO account. Log in, or pay by bank transfer.";
   if (Object.keys(fieldErrors).length > 0) return { fieldErrors, values };
 
   const lines = parseLines(formData.get("items"));
@@ -132,10 +153,37 @@ export async function placeOrder(_prev: PlaceOrderState, formData: FormData): Pr
   }
   const finalLines = [...merged.values()];
   const productIds = [...new Set(finalLines.map((l) => l.productId))].sort();
+  // Came through a boutique's own link (mivo.lk/p/...)? Checked against the order's boutiques below.
+  const refSellerId = (await cookies()).get(REF_COOKIE)?.value ?? null;
 
   // ---------- 2. Transaction: lock, re-check, insert, deduct ----------
   try {
     const orderId = await db.transaction(async (tx) => {
+      // Unpaid guest orders hold stock for up to 3 days. One email address or phone
+      // number may have only a few at once. The advisory locks make two tabs (or a
+      // script) wait for each other, so they can't both slip under the cap.
+      if (!user && guestEmail) {
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"guest-email:" + guestEmail}))`);
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${"guest-phone:" + phone}))`);
+        const [{ unpaid }] = await tx
+          .select({ unpaid: sql<number>`count(*)::int` })
+          .from(orders)
+          .where(
+            and(
+              isNull(orders.buyerId),
+              or(eq(orders.guestEmail, guestEmail), eq(orders.phoneNumber, phone!)),
+              eq(orders.paymentStatus, "PENDING"),
+              eq(orders.orderStatus, "PENDING"),
+              isNull(orders.paymentSlipUrl),
+            ),
+          );
+        if (unpaid >= MAX_UNPAID_GUEST_ORDERS) {
+          throw new CheckoutRefused(
+            "You already have unpaid orders. Please pay for them (or cancel them) using the link in your order email, then try again.",
+          );
+        }
+      }
+
       // Fake COD orders cost nothing to place but hold stock for days. Cap the number
       // open at once. The user row is locked first, so two tabs can't both slip under the cap.
       if (paymentMethod === "COD") {
@@ -149,6 +197,7 @@ export async function placeOrder(_prev: PlaceOrderState, formData: FormData): Pr
           .for("share");
         if (!codCourier) throw new CheckoutRefused("Cash on delivery isn't available right now. Please pay by bank transfer.");
 
+        if (!user) throw new CheckoutRefused("Cash on delivery needs a MIVO account. Log in, or pay by bank transfer.");
         await tx.select({ id: users.id }).from(users).where(eq(users.id, user.id)).for("update");
         const [{ open }] = await tx
           .select({ open: sql<number>`count(*)::int` })
@@ -242,7 +291,10 @@ export async function placeOrder(_prev: PlaceOrderState, formData: FormData): Pr
       const [order] = await tx
         .insert(orders)
         .values({
-          buyerId: user.id,
+          buyerId: user?.id ?? null,
+          guestEmail: user ? null : guestEmail,
+          // Only a boutique that is actually in this order counts as the referrer.
+          referrerSellerId: refSellerId && sellerIds.includes(refSellerId) ? refSellerId : null,
           recipientName,
           phoneNumber: phone!,
           shippingAddress: `${address}\n${city}`,
@@ -286,14 +338,21 @@ export async function placeOrder(_prev: PlaceOrderState, formData: FormData): Pr
       return order.id;
     });
 
-    hit("order", user.id); // counts placed orders only
+    // Counts placed orders only.
+    if (user) hit("order", user.id);
+    else {
+      hit("guestOrderIp", ip);
+      if (guestEmail) hit("guestOrderEmail", guestEmail);
+    }
     // Stock changed: refresh the storefront ("Sold out" badges, stock limits).
     updateTag(PRODUCTS_TAG);
     revalidatePath("/seller/dashboard");
     // Cash on delivery: boutiques can pack right away. Bank transfer orders can't be
     // packed until payment is verified, so their sellers are emailed in verifyPayment.
     if (paymentMethod === "COD") notifyLater("new order (sellers)", () => notifySellersOfNewOrder(orderId));
-    return { orderId };
+    // The buyer's receipt, with the link to their order (a guest's only way back to it).
+    notifyLater("order placed (buyer)", () => notifyBuyerOrderPlaced(orderId));
+    return { orderId, orderUrl: buyerOrderPath(orderId, !user) };
   } catch (err) {
     if (err instanceof CheckoutRefused) return { error: err.message, values };
     if (err instanceof CheckoutConflict) {

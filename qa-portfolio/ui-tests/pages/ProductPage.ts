@@ -4,11 +4,13 @@ export class ProductPage {
   readonly title: Locator;
   readonly size: Locator;
   readonly addToCart: Locator;
+  readonly buyNow: Locator;
 
   constructor(private readonly page: Page) {
     this.title = page.getByRole("heading", { level: 1 });
     this.size = page.getByLabel("Size");
     this.addToCart = page.getByRole("button", { name: "Add to Cart" });
+    this.buyNow = page.getByRole("button", { name: "Buy Now" });
   }
 
   /** Finds the product on the home page by its title and opens it, as a shopper would. */

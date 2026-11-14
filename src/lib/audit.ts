@@ -16,6 +16,7 @@ export async function audit(adminId: string, action: string, target: { type: Aud
 /** Human labels for the activity page. */
 export const ACTION_LABEL: Record<string, string> = {
   verify_payment: "Verified payment",
+  reject_slip: "Rejected slip",
   mark_delivered: "Marked delivered",
   cancel_order: "Cancelled order",
   cancel_package: "Cancelled package",

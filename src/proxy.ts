@@ -5,11 +5,11 @@ import { authConfig } from "@/auth.config";
 // Next.js 16 renamed middleware.ts -> proxy.ts.
 const { auth } = NextAuth(authConfig);
 
-// null = any logged-in user.
+// null = any logged-in user. /checkout is open to guests (bank transfer only), and
+// guests open their orders through secret links under /track.
 const rules: [prefix: string, role: "SELLER" | "ADMIN" | null][] = [
   ["/seller", "SELLER"],
   ["/admin", "ADMIN"],
-  ["/checkout", null],
   ["/orders", null],
   ["/order", null],
 ];
@@ -44,5 +44,5 @@ export default auth((req) => {
 });
 
 export const config = {
-  matcher: ["/dashboard", "/seller/:path*", "/admin/:path*", "/checkout", "/orders", "/order/:path*"],
+  matcher: ["/dashboard", "/seller/:path*", "/admin/:path*", "/orders", "/order/:path*"],
 };

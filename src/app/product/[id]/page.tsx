@@ -3,6 +3,9 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { cookies } from "next/headers";
+import { REF_COOKIE, productLinkPath, shopPath, whatsappLink } from "@/lib/shop-links";
+import { appUrl } from "@/lib/email/templates";
 import { getStorefrontProduct } from "@/lib/catalog";
 import { formatLKR } from "@/lib/format";
 import { AddToCart } from "./add-to-cart";
@@ -13,17 +16,24 @@ import { Stars } from "@/components/stars";
 export async function generateMetadata({ params }: PageProps<"/product/[id]">): Promise<Metadata> {
   const { id } = await params;
   const product = await getStorefrontProduct(id);
-  return product
-    ? { title: product.title, description: product.description?.slice(0, 160) ?? `${product.title} from ${product.shopName}` }
-    : { title: "Product not found" };
+  if (!product) return { title: "Product not found" };
+  const description = product.description?.slice(0, 160) ?? `${product.title} from ${product.shopName}`;
+  return {
+    title: product.title,
+    description,
+    // The preview card WhatsApp / Instagram / Facebook show when a boutique shares the link.
+    openGraph: {
+      title: `${product.title} · ${formatLKR(product.price)}`,
+      description: `${product.shopName} · ${description}`,
+      images: [{ url: product.imageUrl, alt: product.title }],
+      type: "website",
+    },
+  };
 }
 
 export default function ProductPage({ params }: PageProps<"/product/[id]">) {
   return (
     <main className="mx-auto max-w-6xl px-4 py-8 sm:px-8">
-      <Link href="/" className="text-sm text-text-secondary hover:text-accent">
-        ← Back to shop
-      </Link>
       <Suspense fallback={<ProductSkeleton />}>
         <ProductDetails params={params} />
       </Suspense>
@@ -38,6 +48,10 @@ async function ProductDetails({ params }: Pick<PageProps<"/product/[id]">, "para
   if (!product) notFound();
 
   return (
+    <>
+    <Suspense fallback={<BackToMivo />}>
+      <BackLink sellerId={product.sellerId} shopSlug={product.shopSlug} shopName={product.shopName} />
+    </Suspense>
     <div className="mt-6 grid gap-8 md:grid-cols-2 md:gap-12">
       <div className="relative aspect-[3/4] overflow-hidden rounded-2xl bg-muted">
         <Image
@@ -88,6 +102,8 @@ async function ProductDetails({ params }: Pick<PageProps<"/product/[id]">, "para
           sizes={product.sizes}
         />
 
+        <SoldBy product={product} />
+
         {product.description && (
           <section className="mt-10">
             <h2 className="mb-2 text-sm font-semibold uppercase tracking-wide">Details</h2>
@@ -97,12 +113,64 @@ async function ProductDetails({ params }: Pick<PageProps<"/product/[id]">, "para
 
         <ul className="mt-8 space-y-1 text-sm text-text-secondary">
           <li>· Island-wide delivery by trusted local couriers</li>
-          <li>· Cash on delivery or bank transfer</li>
+          <li>· Bank transfer, or cash on delivery when you&apos;re logged in</li>
+          <li>· No account needed to order</li>
         </ul>
       </div>
 
       <ReviewsSection reviews={reviews} />
     </div>
+    </>
+  );
+}
+
+function BackToMivo() {
+  return (
+    <Link href="/" className="text-sm text-text-secondary hover:text-accent">
+      ← Back to shop
+    </Link>
+  );
+}
+
+/**
+ * Buyers who came through this boutique's own link are led back to the boutique,
+ * not to the whole marketplace. Reads a cookie, so it streams in on its own.
+ */
+async function BackLink({ sellerId, shopSlug, shopName }: { sellerId: string; shopSlug: string | null; shopName: string }) {
+  const ref = (await cookies()).get(REF_COOKIE)?.value;
+  if (ref !== sellerId || !shopSlug) return <BackToMivo />;
+  return (
+    <Link href={shopPath(shopSlug)} className="text-sm text-text-secondary hover:text-accent">
+      ← More from {shopName}
+    </Link>
+  );
+}
+
+function SoldBy({ product }: { product: NonNullable<Awaited<ReturnType<typeof getStorefrontProduct>>> }) {
+  const link = appUrl(productLinkPath(product.id));
+  return (
+    <section className="mt-6 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-surface p-4 text-sm">
+      <div>
+        <p className="text-xs text-text-secondary">Sold and shipped by</p>
+        {product.shopSlug ? (
+          <Link href={shopPath(product.shopSlug)} className="font-semibold hover:text-accent-hover">
+            {product.shopName}
+          </Link>
+        ) : (
+          <p className="font-semibold">{product.shopName}</p>
+        )}
+      </div>
+      {product.whatsappNumber && (
+        <a
+          href={whatsappLink(product.whatsappNumber, `Hi ${product.shopName}, I'm asking about "${product.title}": ${link}`)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="rounded-full bg-success px-4 py-2 font-medium text-white hover:opacity-90"
+        >
+          Ask on WhatsApp
+        </a>
+      )}
+    </section>
   );
 }
 

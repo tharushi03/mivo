@@ -1,5 +1,5 @@
 // US-01: Buyer checkout with bank transfer.
-// Covers TC-01 (happy path), TC-02 (guest blocked) and TC-03 (cart price tampering).
+// Covers TC-01 (happy path), TC-02 (guest checkout with Buy Now) and TC-03 (cart price tampering).
 import { test, expect } from "./fixtures";
 import { appEnv, withDb } from "../support/db";
 
@@ -78,9 +78,53 @@ test.describe("US-01 Buyer checkout (bank transfer)", () => {
     });
   });
 
-  test("TC-02 a guest is sent to log in before checkout", async ({ page }) => {
-    await page.goto("/checkout");
-    await expect(page).toHaveURL(/\/login\?callbackUrl=%2Fcheckout$/);
+  test("TC-02 a guest buys with Buy Now, no account, bank transfer only", async ({ page, productPage, checkoutPage }) => {
+    const size = SIZE_FOR[test.info().project.name] ?? "S";
+    const email = `qa-guest-${test.info().project.name}-${Date.now()}@mivo.test`;
+    // MIVO allows only 2 unpaid guest orders per phone number, so each browser uses its own.
+    const GUEST_PHONE: Record<string, string> = { chromium: "0711000001", firefox: "0711000002", webkit: "0711000003" };
+    const phone = GUEST_PHONE[test.info().project.name] ?? "0711000009";
+
+    await test.step("Buy Now goes straight to checkout with just this item", async () => {
+      await productPage.openFromHome(PRODUCT.title);
+      await productPage.chooseSize(size);
+      await productPage.buyNow.click();
+      await expect(page).toHaveURL(/\/checkout\?buy=/);
+      await expect(page.getByText("No account needed.", { exact: true })).toBeVisible();
+      await expect(page.getByText(PRODUCT.title).first()).toBeVisible();
+    });
+
+    await test.step("guests can't choose cash on delivery", async () => {
+      await expect(checkoutPage.cashOnDelivery).toHaveCount(0);
+      await expect(page.getByText("Cash on delivery is available for customers with a MIVO account")).toBeVisible();
+    });
+
+    const { orderId, link } = await test.step("enter email + delivery details and place the order", async () => {
+      await checkoutPage.email.fill(email);
+      await checkoutPage.fillDelivery({ ...DELIVERY, phone });
+      await checkoutPage.payByBankTransfer();
+      // The guest form refuses posts within 3 seconds of opening it (bots); a person takes longer.
+      await page.waitForTimeout(3_000);
+      return checkoutPage.submitAsGuestAndWaitForOrder();
+    });
+
+    await test.step("the secret link shows the order and the bank details", async () => {
+      await expect(page.getByText("Complete your payment by bank transfer")).toBeVisible();
+      await expect(page.getByText("Bookmark this page")).toBeVisible();
+      await expect(page.getByText(`MIVO-${orderId.slice(0, 8).toUpperCase()}`).first()).toBeVisible();
+    });
+
+    await test.step("database: a guest order (no account) paid by bank transfer", async () => {
+      const order = await withDb(async (db) =>
+        (await db.query("select buyer_id, guest_email, payment_method from orders where id = $1", [orderId])).rows[0],
+      );
+      expect(order).toEqual({ buyer_id: null, guest_email: email, payment_method: "BANK_TRANSFER" });
+    });
+
+    await test.step("a wrong key in the link shows nothing", async () => {
+      await page.goto(link.replace(/[A-Za-z0-9_-]{32}$/, "A".repeat(32)));
+      await expect(page.getByText("Complete your payment by bank transfer")).toHaveCount(0);
+    });
   });
 
   test("TC-03 a price changed in the browser is not accepted", async ({ page, buyer, loginPage, productPage, checkoutPage }) => {

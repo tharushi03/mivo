@@ -1,5 +1,5 @@
 Story,Acceptance Criterion,Requirement,Test Cases,Automated,Risk,Status
-US-01,AC1,Only logged-in buyers with a confirmed email can order,TC-02,Yes,R1,Covered
+US-01,AC1,"Anyone can order: guests by bank transfer only (secret order link), logged-in buyers with a confirmed email may also use COD",TC-02,Yes,R1,Covered
 US-01,AC2,Total = database prices + LKR 400 per boutique package,TC-01,Yes,R2,Covered
 US-01,AC3,Changed price or stock stops the order and shows what changed,TC-03,Yes,R2,Covered
 US-01,AC4,Confirmation shows MIVO bank details total and reference,TC-01,Yes,,Covered
