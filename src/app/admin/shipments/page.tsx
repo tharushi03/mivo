@@ -12,7 +12,8 @@ import { ActionForm, SubmitButton } from "@/components/action-form";
 import { EmptyState } from "@/components/empty-state";
 import { ShipmentStatusBadge } from "@/components/shipment-status-badge";
 import { PAGE_SIZE, Pagination, parsePage } from "@/components/pagination";
-import { markShipmentDelivered } from "@/app/actions/admin-orders";
+import { markInHub, markShipmentDelivered } from "@/app/actions/admin-orders";
+import { DispatchForm } from "@/components/dispatch-form";
 import { EditTracking } from "@/components/edit-tracking";
 import { codCouriers, getActiveCouriers } from "@/lib/couriers";
 
@@ -21,13 +22,18 @@ export const metadata: Metadata = { title: "Admin · Shipments" };
 // When a package became ready to ship: COD right away, bank transfer once MIVO confirmed payment.
 const readyAt = sql`(case when ${orders.paymentMethod} = 'COD' then ${orders.createdAt} else ${orders.paidAt} end)`;
 const isReady = sql`(${orders.paymentMethod} = 'COD' or ${orders.paymentStatus} = 'PAID')`;
-const isLate = sql`(${shipments.status} = 'PENDING' and ${isReady} and ${readyAt} < now() - make_interval(days => ${DISPATCH_TARGET_DAYS}))`;
+// When the boutique handed its part over: pressed Ready (MIVO Hub), or, before the hub, dispatched itself.
+const handedAt = sql`coalesce(${shipments.packedAt}, ${shipments.dispatchedAt})`;
+// Late = the boutique hasn't packed within the target.
+const isLate = sql`(${shipments.status} = 'PENDING' and ${isReady} and ${shipments.packedAt} is null and ${readyAt} < now() - make_interval(days => ${DISPATCH_TARGET_DAYS}))`;
 // Items in this boutique's package (for the COD amount the courier must collect).
 const itemsTotal = sql<string>`(select coalesce(sum(oi.price_at_purchase * oi.quantity), 0) from order_items oi join products p on p.id = oi.product_id where oi.order_id = ${shipments.orderId} and p.seller_id = ${shipments.sellerId})`;
 
 const TABS = {
-  late: { label: "Late", where: isLate },
-  ready: { label: "To dispatch", where: sql`(${shipments.status} = 'PENDING' and ${isReady})` },
+  packed: { label: "Packed (to collect)", where: sql`(${shipments.status} = 'PENDING' and ${shipments.packedAt} is not null and ${shipments.inHubAt} is null)` },
+  hub: { label: "In hub (to send)", where: sql`(${shipments.status} = 'PENDING' and ${shipments.inHubAt} is not null)` },
+  late: { label: "Late (not packed)", where: isLate },
+  ready: { label: "Being packed", where: sql`(${shipments.status} = 'PENDING' and ${isReady} and ${shipments.packedAt} is null)` },
   unpaid: { label: "Awaiting payment", where: sql`(${shipments.status} = 'PENDING' and not ${isReady})` },
   sent: { label: "On the way", where: eq(shipments.status, "DISPATCHED") },
   done: { label: "Delivered", where: eq(shipments.status, "DELIVERED") },
@@ -40,8 +46,9 @@ export default function AdminShipmentsPage({ searchParams }: PageProps<"/admin/s
     <main className="mx-auto max-w-[1400px] p-4 sm:p-8">
       <h1 className="text-3xl font-bold">Shipments</h1>
       <p className="mb-6 mt-1 text-text-secondary">
-        Every boutique package. Boutiques should dispatch within {DISPATCH_TARGET_DAYS} days of an order being ready.
-        Mark a package delivered once it has arrived (for COD, once the courier has paid MIVO the cash).
+        Boutiques pack within {DISPATCH_TARGET_DAYS} days and press Ready. When a parcel reaches the MIVO Hub, press{" "}
+        <strong>In Hub</strong>. When the courier collects it, enter the courier and tracking number. Mark a package delivered
+        once it has arrived (for COD, once the courier has paid MIVO the cash).
       </p>
       <Suspense fallback={<div className="h-96 animate-pulse rounded-xl border border-border bg-surface" />}>
         <Shipments searchParams={searchParams} />
@@ -53,7 +60,7 @@ export default function AdminShipmentsPage({ searchParams }: PageProps<"/admin/s
 async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "searchParams">) {
   await requireAdmin();
   const sp = await searchParams;
-  const tab: Tab = typeof sp.tab === "string" && sp.tab in TABS ? (sp.tab as Tab) : "late";
+  const tab: Tab = typeof sp.tab === "string" && sp.tab in TABS ? (sp.tab as Tab) : "packed";
   const page = parsePage(sp.page);
   const where = TABS[tab].where;
 
@@ -80,11 +87,13 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
         trackingNumber: shipments.trackingNumber,
         deliveryFee: shipments.deliveryFee,
         itemsTotal,
+        packedAt: shipments.packedAt,
+        inHubAt: shipments.inHubAt,
         dispatchedAt: shipments.dispatchedAt,
         deliveredAt: shipments.deliveredAt,
         readyAt: sql<Date | null>`${readyAt}`.mapWith(orders.createdAt), // parse as a timestamp
-        // Whole days the package has been waiting to be sent (ready -> now), or took (ready -> dispatched).
-        waitDays: sql<number | null>`floor(extract(epoch from (coalesce(${shipments.dispatchedAt}, now()) - ${readyAt})) / 86400)::int`,
+        // Whole days the boutique has been packing (ready -> now), or took (ready -> handed over).
+        waitDays: sql<number | null>`floor(extract(epoch from (coalesce(${handedAt}, now()) - ${readyAt})) / 86400)::int`,
         late: sql<boolean>`${isLate}`,
         paymentMethod: orders.paymentMethod,
         paymentStatus: orders.paymentStatus,
@@ -95,18 +104,26 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
       .innerJoin(sellerProfiles, eq(shipments.sellerId, sellerProfiles.id))
       .leftJoin(couriers, eq(shipments.courierId, couriers.id))
       .where(where)
-      .orderBy(tab === "late" || tab === "ready" ? sql`${readyAt} asc` : desc(shipments.createdAt))
+      .orderBy(
+        tab === "late" || tab === "ready"
+          ? sql`${readyAt} asc`
+          : tab === "packed"
+            ? sql`${shipments.packedAt} asc`
+            : tab === "hub"
+              ? sql`${shipments.inHubAt} asc`
+              : desc(shipments.createdAt),
+      )
       .limit(PAGE_SIZE)
       .offset((page - 1) * PAGE_SIZE),
     // Dispatch performance per boutique, last 90 days.
     db
       .select({
         shopName: sellerProfiles.shopName,
-        toShip: sql<number>`count(*) filter (where ${shipments.status} = 'PENDING' and ${isReady})::int`,
+        toShip: sql<number>`count(*) filter (where ${shipments.status} = 'PENDING' and ${isReady} and ${shipments.packedAt} is null)::int`,
         late: sql<number>`count(*) filter (where ${isLate})::int`,
-        sent: sql<number>`count(*) filter (where ${shipments.dispatchedAt} is not null)::int`,
-        onTime: sql<number>`count(*) filter (where ${shipments.dispatchedAt} is not null and ${shipments.dispatchedAt} - ${readyAt} <= make_interval(days => ${DISPATCH_TARGET_DAYS}))::int`,
-        avgHours: sql<string | null>`round((avg(extract(epoch from (${shipments.dispatchedAt} - ${readyAt}))) filter (where ${shipments.dispatchedAt} is not null) / 3600)::numeric, 1)`,
+        sent: sql<number>`count(*) filter (where ${handedAt} is not null)::int`,
+        onTime: sql<number>`count(*) filter (where ${handedAt} is not null and ${handedAt} - ${readyAt} <= make_interval(days => ${DISPATCH_TARGET_DAYS}))::int`,
+        avgHours: sql<string | null>`round((avg(extract(epoch from (${handedAt} - ${readyAt}))) filter (where ${handedAt} is not null) / 3600)::numeric, 1)`,
       })
       .from(shipments)
       .innerJoin(orders, eq(shipments.orderId, orders.id))
@@ -120,7 +137,7 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
 
   const href = (t: Tab, p = 1) => {
     const qs = new URLSearchParams();
-    if (t !== "late") qs.set("tab", t);
+    if (t !== "packed") qs.set("tab", t);
     if (p > 1) qs.set("page", String(p));
     const s = qs.toString();
     return s ? `/admin/shipments?${s}` : "/admin/shipments";
@@ -130,16 +147,16 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
     <>
       {scoreboard.length > 0 && (
         <section className="mb-8">
-          <h2 className="mb-3 text-lg font-bold">Boutique dispatch performance (90 days)</h2>
+          <h2 className="mb-3 text-lg font-bold">Boutique packing performance (90 days)</h2>
           <div className="overflow-x-auto rounded-xl border border-border bg-surface">
             <table className="w-full min-w-[640px] text-left text-sm">
               <thead className="bg-muted/50 text-xs uppercase tracking-wide text-text-secondary">
                 <tr>
                   <th className="px-4 py-2.5 font-medium">Boutique</th>
-                  <th className="px-4 py-2.5 text-right font-medium">To dispatch</th>
+                  <th className="px-4 py-2.5 text-right font-medium">To pack</th>
                   <th className="px-4 py-2.5 text-right font-medium">Late now</th>
                   <th className="px-4 py-2.5 text-right font-medium">On time</th>
-                  <th className="px-4 py-2.5 text-right font-medium">Avg. time to dispatch</th>
+                  <th className="px-4 py-2.5 text-right font-medium">Avg. time to pack</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -187,7 +204,13 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
 
       {list.length === 0 ? (
         <EmptyState icon="box" title={tab === "late" ? "No late packages" : "No packages here"}>
-          {tab === "late" ? "Every boutique is dispatching on time." : "Packages appear here as orders come in."}
+          {tab === "late"
+            ? "Every boutique is packing on time."
+            : tab === "packed"
+              ? "Parcels appear here when a boutique presses Ready."
+              : tab === "hub"
+                ? "Parcels appear here after you press In Hub."
+                : "Packages appear here as orders come in."}
         </EmptyState>
       ) : (
         <div className="overflow-x-auto rounded-xl border border-border bg-surface">
@@ -219,10 +242,16 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
                     </td>
                     <td className="px-4 py-3 text-xs">
                       {s.status === "PENDING" && !s.readyAt && <span className="text-text-secondary">Waiting for bank transfer</span>}
-                      {s.status === "PENDING" && s.readyAt && (
+                      {s.status === "PENDING" && s.readyAt && !s.packedAt && (
                         <span className={s.late ? "font-medium text-error" : ""}>
-                          Waiting {s.waitDays ?? 0} {s.waitDays === 1 ? "day" : "days"}
+                          Packing for {s.waitDays ?? 0} {s.waitDays === 1 ? "day" : "days"}
                           <span className="block text-text-secondary">ready {formatDateTime(s.readyAt)}</span>
+                        </span>
+                      )}
+                      {s.status === "PENDING" && s.packedAt && (
+                        <span>
+                          Packed {formatDateTime(s.packedAt)}
+                          {s.inHubAt && <span className="block font-medium text-success">In hub {formatDateTime(s.inHubAt)}</span>}
                         </span>
                       )}
                       {s.dispatchedAt && (
@@ -230,7 +259,7 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
                           Sent {formatDateTime(s.dispatchedAt)}
                           {s.waitDays !== null && (
                             <span className="block text-text-secondary">
-                              {s.waitDays} {s.waitDays === 1 ? "day" : "days"} after ready
+                              packed {s.waitDays} {s.waitDays === 1 ? "day" : "days"} after ready
                             </span>
                           )}
                         </span>
@@ -259,6 +288,23 @@ async function Shipments({ searchParams }: Pick<PageProps<"/admin/shipments">, "
                       {cod && s.status !== "CANCELLED" ? formatLKR(Number(s.itemsTotal) + Number(s.deliveryFee)) : <span className="text-text-secondary">—</span>}
                     </td>
                     <td className="px-4 py-3">
+                      {s.status === "PENDING" && s.readyAt && !s.inHubAt && (
+                        <ActionForm
+                          action={markInHub}
+                          fields={{ shipmentId: s.id }}
+                          confirmMessage={`Has the ${s.shopName} parcel for ${orderRef(s.orderId)} arrived at the MIVO Hub?${s.packedAt ? "" : " The boutique hasn't pressed Ready yet."}`}
+                        >
+                          <SubmitButton>In Hub</SubmitButton>
+                        </ActionForm>
+                      )}
+                      {s.status === "PENDING" && s.inHubAt && (
+                        <DispatchForm
+                          shipmentId={s.id}
+                          orderRef={orderRef(s.orderId)}
+                          codAmount={cod ? formatLKR(Number(s.itemsTotal) + Number(s.deliveryFee)) : null}
+                          couriers={s.paymentMethod === "COD" ? codCouriers(courierList) : courierList}
+                        />
+                      )}
                       {s.status === "DISPATCHED" && (
                         <ActionForm
                           action={markShipmentDelivered}

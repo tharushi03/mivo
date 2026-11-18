@@ -1,8 +1,11 @@
+import { Suspense } from "react";
 import Link from "next/link";
+import { requireSeller } from "@/lib/dal";
 import { ProductForm } from "../_form/product-form";
+import { getPairingOptions } from "../_form/pairing-options";
 
-// Static page: access is guarded by src/proxy.ts, and the createProduct
-// action re-checks the seller session before saving anything.
+// Access is guarded by src/proxy.ts; the page reads the boutique's products for
+// "Style it with", and the createProduct action re-checks the seller session.
 export default function NewProductPage() {
   return (
     <div className="min-h-screen bg-background p-4 text-text sm:p-8">
@@ -12,8 +15,16 @@ export default function NewProductPage() {
         </Link>
         <h1 className="mb-1 mt-3 text-3xl font-bold">Add a product</h1>
         <p className="mb-8 text-text-secondary">List a new piece on the MIVO marketplace.</p>
-        <ProductForm />
+        <Suspense fallback={<div className="h-[40rem] animate-pulse rounded-xl border border-border bg-surface" />}>
+          <NewForm />
+        </Suspense>
       </div>
     </div>
   );
+}
+
+async function NewForm() {
+  const { profile } = await requireSeller();
+  const pairingOptions = profile ? await getPairingOptions(profile.id) : [];
+  return <ProductForm pairingOptions={pairingOptions} />;
 }

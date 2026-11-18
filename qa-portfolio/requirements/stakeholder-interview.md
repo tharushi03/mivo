@@ -12,7 +12,7 @@ The answers reflect the decisions actually built into MIVO.*
 
 **QA:** Who does the buyer actually pay: the boutique or MIVO?
 **PO:** Always MIVO. Bank transfers go to MIVO's account. For cash on delivery, the courier
-collects the cash and pays it to MIVO. Boutiques are paid later, minus a 10% commission.
+collects the cash and pays it to MIVO. Boutiques are paid later, minus a 5% commission.
 
 **QA:** What happens after a buyer chooses bank transfer?
 **PO:** The confirmation page shows MIVO's bank details, the exact amount and a reference like

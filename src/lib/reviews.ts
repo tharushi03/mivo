@@ -1,12 +1,19 @@
 // Reviews: public reads for the product page (cached), and the buyer's
 // "what can I review" list for My Orders.
 import { cacheLife, cacheTag } from "next/cache";
-import { and, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { orderItems, orders, products, reviews, users } from "@/db/schema";
+import { orderItems, orders, products, reviews, shipments, users } from "@/db/schema";
+import { FIT_OPTIONS, type Fit } from "@/lib/review-fit";
 
 export const REVIEWS_TAG = "reviews";
 export const MAX_COMMENT = 1000;
+
+/** Joins an order item to its boutique's package. A product can be reviewed once THAT package is delivered. */
+export const itemPackageDelivered = sql`exists (select 1 from ${shipments} s join ${products} p on p.seller_id = s.seller_id
+  where s.order_id = ${orderItems.orderId} and p.id = ${orderItems.productId} and s.status = 'DELIVERED')`;
+
+export type MyReview = { rating: number; comment: string | null; fit: Fit | null };
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -23,9 +30,9 @@ export async function getProductReviews(productId: string, limit = 10) {
   cacheTag(REVIEWS_TAG);
   cacheLife("hours");
 
-  if (!UUID.test(productId)) return { count: 0, average: 0, breakdown: [0, 0, 0, 0, 0], latest: [] };
+  if (!UUID.test(productId)) return { count: 0, average: 0, breakdown: [0, 0, 0, 0, 0], fit: { answers: 0, SMALL: 0, TRUE: 0, LARGE: 0 }, latest: [] };
 
-  const [[summary], perStar, latest] = await Promise.all([
+  const [[summary], perStar, perFit, latest] = await Promise.all([
     db
       .select({ count: sql<number>`count(*)::int`, average: sql<string | null>`avg(${reviews.rating})` })
       .from(reviews)
@@ -36,25 +43,60 @@ export async function getProductReviews(productId: string, limit = 10) {
       .where(eq(reviews.productId, productId))
       .groupBy(reviews.rating),
     db
-      .select({ id: reviews.id, rating: reviews.rating, comment: reviews.comment, name: users.name, createdAt: reviews.createdAt })
+      .select({ fit: reviews.fit, n: sql<number>`count(*)::int` })
       .from(reviews)
-      .innerJoin(users, eq(reviews.buyerId, users.id))
+      .where(and(eq(reviews.productId, productId), sql`${reviews.fit} is not null`))
+      .groupBy(reviews.fit),
+    db
+      .select({
+        id: reviews.id,
+        rating: reviews.rating,
+        fit: reviews.fit,
+        comment: reviews.comment,
+        // Guests have no account: the name they gave for delivery.
+        name: sql<string>`coalesce(${users.name}, ${orders.recipientName})`,
+        createdAt: reviews.createdAt,
+      })
+      .from(reviews)
+      .innerJoin(orders, eq(reviews.orderId, orders.id))
+      .leftJoin(users, eq(reviews.buyerId, users.id))
       .where(eq(reviews.productId, productId))
       .orderBy(desc(reviews.createdAt))
       .limit(limit),
   ]);
 
   const breakdown = [5, 4, 3, 2, 1].map((star) => perStar.find((p) => p.rating === star)?.n ?? 0);
+  const fitCount = (f: Fit) => perFit.find((p) => p.fit === f)?.n ?? 0;
+  const fit = { SMALL: fitCount("SMALL"), TRUE: fitCount("TRUE"), LARGE: fitCount("LARGE"), answers: FIT_OPTIONS.reduce((n, f) => n + fitCount(f), 0) };
   return {
     count: summary.count,
     average: summary.average ? Math.round(Number(summary.average) * 10) / 10 : 0,
     breakdown, // counts for 5★, 4★, 3★, 2★, 1★
-    latest: latest.map((r) => ({ ...r, name: publicName(r.name) })),
+    fit, // how many buyers said it runs small / true to size / runs large
+    latest: latest.map((r) => ({ ...r, fit: r.fit as Fit | null, name: publicName(r.name) })),
   };
 }
 
 /**
- * Items the buyer can review: products from their DELIVERED orders, with their
+ * The buyer's own reviews of the products in one order, by product id (for the order page).
+ * Accounts: their review of each product (from any order). Guests: reviews made from this order.
+ */
+export async function getMyReviewsForOrder(orderId: string, buyerId: string | null) {
+  const productIds = db.select({ id: orderItems.productId }).from(orderItems).where(eq(orderItems.orderId, orderId));
+  const rows = await db
+    .select({ productId: reviews.productId, rating: reviews.rating, comment: reviews.comment, fit: reviews.fit })
+    .from(reviews)
+    .where(
+      and(
+        inArray(reviews.productId, productIds),
+        buyerId ? eq(reviews.buyerId, buyerId) : and(isNull(reviews.buyerId), eq(reviews.orderId, orderId)),
+      ),
+    );
+  return new Map<string, MyReview>(rows.map((r) => [r.productId, { rating: r.rating, comment: r.comment, fit: r.fit as Fit | null }]));
+}
+
+/**
+ * Items the buyer can review: products whose package was DELIVERED, with their
  * existing review if any. Keyed by order id for the My Orders page.
  */
 export async function getReviewableItems(buyerId: string) {
@@ -69,18 +111,18 @@ export async function getReviewableItems(buyerId: string) {
     .from(orderItems)
     .innerJoin(orders, eq(orderItems.orderId, orders.id))
     .innerJoin(products, eq(orderItems.productId, products.id))
-    .where(and(eq(orders.buyerId, buyerId), eq(orders.orderStatus, "DELIVERED")));
+    .where(and(eq(orders.buyerId, buyerId), itemPackageDelivered));
 
   const productIds = [...new Set(items.map((i) => i.productId))];
   const mine = productIds.length
     ? await db
-        .select({ productId: reviews.productId, rating: reviews.rating, comment: reviews.comment })
+        .select({ productId: reviews.productId, rating: reviews.rating, comment: reviews.comment, fit: reviews.fit })
         .from(reviews)
         .where(and(eq(reviews.buyerId, buyerId), inArray(reviews.productId, productIds)))
     : [];
-  const reviewByProduct = new Map(mine.map((r) => [r.productId, r]));
+  const reviewByProduct = new Map<string, MyReview>(mine.map((r) => [r.productId, { rating: r.rating, comment: r.comment, fit: r.fit as Fit | null }]));
 
-  const byOrder = new Map<string, { productId: string; title: string; imageUrl: string; sizes: string[]; review: { rating: number; comment: string | null } | null }[]>();
+  const byOrder = new Map<string, { productId: string; title: string; imageUrl: string; sizes: string[]; review: MyReview | null }[]>();
   for (const i of items) {
     const list = byOrder.get(i.orderId) ?? [];
     const existing = list.find((x) => x.productId === i.productId); // same product, two sizes -> one review

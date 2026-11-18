@@ -18,7 +18,7 @@ export default function AdminPayoutsPage() {
       <h1 className="text-3xl font-bold">Payouts</h1>
       <p className="mb-6 mt-1 text-text-secondary">
         What MIVO owes each boutique for packages delivered <strong className="text-text">more than {PAYOUT_HOLD_DAYS} days ago</strong>{" "}
-        (the buyer&apos;s return window), minus commission, plus delivery fees boutiques paid themselves on prepaid orders.
+        (the buyer&apos;s return window), minus commission, plus delivery fees boutiques paid themselves on prepaid orders they sent before the MIVO Hub.
         Returned and cancelled packages are never included.
       </p>
       <Suspense fallback={<div className="h-96 animate-pulse rounded-xl border border-border bg-surface" />}>

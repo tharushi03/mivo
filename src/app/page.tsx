@@ -20,10 +20,10 @@ export default async function HomePage() {
         </p>
       </section>
 
-      <section aria-labelledby="new-in">
+      <section aria-labelledby="new-in" id="new-in" className="scroll-mt-32">
         <div className="mb-6 flex items-baseline justify-between border-b border-border pb-3">
           <h2 id="new-in" className="text-xl font-bold">
-            New in
+            New In
           </h2>
           <span className="text-sm text-text-secondary">
             {items.length} {items.length === 1 ? "piece" : "pieces"}
@@ -35,7 +35,7 @@ export default async function HomePage() {
             Our boutiques are adding their first pieces. Check back soon.
           </EmptyState>
         ) : (
-          <ul className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          <ul className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-6 sm:gap-y-10 md:grid-cols-3 lg:grid-cols-4">
             {items.map((p, i) => (
               <li key={p.id}>
                 <ProductCard product={p} priority={i < 4} />

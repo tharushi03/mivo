@@ -15,7 +15,7 @@ window. That makes it a good subject for QA: the risks are real.
 | [`test-data/`](test-data/) | Fixture files: a valid slip image and a fake one (a text file renamed `.jpg`) |
 | [`ui-tests/`](ui-tests/) | Playwright end-to-end tests, Page Object Model, Chromium + Firefox + WebKit |
 | [`api-tests/`](api-tests/mivo-api.json) | Postman collection: login, checkout Server Action, access control |
-| [`perf-tests/`](perf-tests/k6-homepage-load.js) | k6 load test of the home page, 50 virtual users, with pass/fail thresholds |
+| [`perf-tests/`](perf-tests/) | k6 load tests: home page with 50 users, and a 1,000-shopper browsing journey (home, product, shop, cart), with pass/fail thresholds |
 | [`uat/`](uat/uat-checklist.md) | User acceptance checklist for the product owner |
 | [`issues/`](issues/bug-report-template.md) | Bug report template with a worked example |
 | [`reports/`](reports/README.md) | Where test reports are written (not committed) |
@@ -64,6 +64,21 @@ Install [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/), start a **p
 ```bash
 k6 run perf-tests/k6-homepage-load.js
 ```
+
+### 1,000 shoppers
+
+Browses like real people (home page, a product, sometimes the boutique's shop or the cart, with pauses)
+and never places orders. Run it against **staging** (or the live site outside business hours), from a
+machine with spare CPU and RAM:
+
+```bash
+k6 run -e BASE_URL=https://staging.your-domain.lk -e PEAK=300 perf-tests/k6-shoppers-1k.js   # first, smaller run
+k6 run -e BASE_URL=https://staging.your-domain.lk perf-tests/k6-shoppers-1k.js                # 1,000 users, about 12 minutes
+k6 run -e PEAK=5 -e QUICK=1 perf-tests/k6-shoppers-1k.js                                       # 35-second check against localhost
+```
+
+It refuses more than 20 users against localhost. Watch the server's CPU and RAM in Dokploy while it runs;
+the summary is saved to `reports/k6-shoppers-1k-summary.json`.
 
 ## Coverage at a glance
 

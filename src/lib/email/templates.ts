@@ -84,77 +84,60 @@ function itemTable(items: Item[]) {
 const box = (html: string) =>
   `<div style="background:${C.cream};border-radius:8px;padding:14px 16px;margin:12px 0;font-size:14px">${html}</div>`;
 
-// ---------------------------------------------------------------- Trigger 1: seller, new order to ship
+// ---------------------------------------------------------------- Trigger 1: seller, new order to pack
 
 export function sellerNewOrderEmail(d: {
   to: string;
   shopName: string;
   orderRef: string;
   items: Item[];
-  shipTo: { name: string; address: string; phone: string };
-  /** Cash the courier must collect for THIS package (COD only). */
+  /** Cash the customer pays the courier for THIS package (COD only; MIVO books it). */
   codAmount: string | null;
-  /** Delivery fee for this package (repaid with the payout on prepaid orders). */
-  deliveryFee: string;
-  /** COD only: couriers where MIVO has an account, and how to book on it. */
-  codCouriers: { name: string; accountNumber: string | null; bookingInstructions: string | null }[];
+  /** Where to drop the parcel. Null address = MIVO will tell them. */
+  hub: { address: string | null; hours: string | null };
 }): Email {
   const first = d.items[0]?.title ?? "an item";
-  const codHtml = d.codCouriers
-    .map(
-      (c) =>
-        `<li style="margin:6px 0"><strong>${esc(c.name)}</strong>: MIVO account <strong>${esc(c.accountNumber ?? "ask MIVO")}</strong>` +
-        (c.bookingInstructions ? `<br><span style="color:${C.grey}">${esc(c.bookingInstructions).split(NL).join("<br>")}</span>` : "") +
-        `</li>`,
-    )
-    .join("");
-  const codText = d.codCouriers.map(
-    (c) => `- ${c.name}: MIVO account ${c.accountNumber ?? "(ask MIVO)"}${c.bookingInstructions ? `. ${c.bookingInstructions.split(NL).join(" ")}` : ""}`,
-  );
   const more = d.items.length > 1 ? ` and ${d.items.length - 1} more` : "";
-  const addressHtml = esc(d.shipTo.address).split(NL).join("<br>");
+  const hubHtml = d.hub.address
+    ? `<strong>MIVO Hub:</strong> ${esc(d.hub.address)}${d.hub.hours ? `<br>Drop-off: ${esc(d.hub.hours)}` : ""}`
+    : "MIVO will tell you where to drop it off.";
+  const hubText = d.hub.address ? `MIVO Hub: ${d.hub.address}${d.hub.hours ? ` (drop-off: ${d.hub.hours})` : ""}` : "MIVO will tell you where to drop it off.";
 
   return {
     to: d.to,
     subject: `New Order on MIVO! ${first}${more} (${d.orderRef})`,
     html: layout({
-      preheader: `You have a new order for ${first}${more}. Please pack it and ship it to the customer.`,
+      preheader: `You have a new order for ${first}${more}. Please pack it and drop it at the MIVO Hub.`,
       heading: "New Order on MIVO!",
       bodyHtml:
-        `<p style="margin:0 0 8px">Hi ${esc(d.shopName)}, you have a new order for <strong>${esc(first)}</strong>${esc(more)}. Please pack it and ship it directly to the customer.</p>` +
+        `<p style="margin:0 0 8px">Hi ${esc(d.shopName)}, you have a new order for <strong>${esc(first)}</strong>${esc(more)}. Please pack it within 2 days. MIVO sends it to the customer.</p>` +
         `<p style="margin:0;color:${C.grey};font-size:13px">Order ${esc(d.orderRef)}</p>` +
         itemTable(d.items) +
-        box(`<strong>Ship to:</strong><br>${esc(d.shipTo.name)}<br>${addressHtml}<br>Phone: ${esc(d.shipTo.phone)}`) +
-        (d.codAmount
-          ? box(
-              `<strong>Cash on delivery:</strong> the courier must collect <strong>${esc(lkr(d.codAmount))}</strong> for this package.` +
-                `<br>Book it on <strong>MIVO&#39;s account</strong> (not your own), so the cash comes to MIVO. Use <strong>${esc(d.orderRef)}</strong> as the reference and <strong>${esc(lkr(d.codAmount))}</strong> as the COD amount.` +
-                (codHtml
-                  ? `<ul style="margin:8px 0 0;padding-left:18px">${codHtml}</ul>`
-                  : `<br><strong>No courier is set up for cash on delivery yet. Please contact MIVO before sending it.</strong>`),
-            )
-          : `<p style="margin:12px 0 0;font-size:14px">This order is already paid, so the courier collects nothing. Book it with any courier: MIVO repays the ${esc(lkr(d.deliveryFee))} delivery fee with your payout.</p>`) +
-        `<p style="margin:12px 0 0;font-size:14px">After handing the package to the courier, open your dashboard and enter the <strong>courier and tracking number</strong>. We'll email the customer.</p>`,
-      cta: { label: "Ship this order", href: appUrl("/seller/orders") },
+        box(
+          `<strong>What to do:</strong><br>1. Pack the items and write <strong>${esc(d.orderRef)}</strong> on the parcel.<br>` +
+            `2. Press <strong>Packed, Ready for MIVO</strong> on your orders page.<br>3. Drop the parcel at the MIVO Hub.<br><br>${hubHtml}`,
+        ) +
+        `<p style="margin:12px 0 0;font-size:14px">MIVO books and pays the courier and sends the customer the tracking number.` +
+        (d.codAmount ? ` This is cash on delivery: the customer pays <strong>${esc(lkr(d.codAmount))}</strong> to the courier, and it comes to MIVO.` : " This order is already paid.") +
+        `</p>`,
+      cta: { label: "Open my orders", href: appUrl("/seller/orders") },
     }),
     text: [
       "New Order on MIVO!",
       "",
-      `Hi ${d.shopName}, you have a new order for ${first}${more}. Please pack it and ship it directly to the customer.`,
+      `Hi ${d.shopName}, you have a new order for ${first}${more}. Please pack it within 2 days. MIVO sends it to the customer.`,
       "",
       `Order ${d.orderRef}`,
       itemLines(d.items),
       "",
-      `Ship to: ${d.shipTo.name}, ${d.shipTo.address.split(NL).join(", ")}, ${d.shipTo.phone}`,
-      ...(d.codAmount
-        ? [
-            `Cash on delivery: courier collects ${lkr(d.codAmount)}.`,
-            `Book it on MIVO's account (not your own), with reference ${d.orderRef} and COD amount ${lkr(d.codAmount)}:`,
-            ...(codText.length ? codText : ["No courier is set up for cash on delivery yet. Please contact MIVO before sending it."]),
-          ]
-        : [`Already paid: courier collects nothing. Book any courier; MIVO repays the ${lkr(d.deliveryFee)} delivery fee with your payout.`]),
+      `1. Pack the items and write ${d.orderRef} on the parcel.`,
+      "2. Press \"Packed, Ready for MIVO\" on your orders page.",
+      "3. Drop the parcel at the MIVO Hub.",
+      hubText,
       "",
-      `Then enter the courier and tracking number: ${appUrl("/seller/orders")}`,
+      `MIVO books and pays the courier and sends the customer the tracking number.${d.codAmount ? ` Cash on delivery: the customer pays ${lkr(d.codAmount)} to the courier.` : " This order is already paid."}`,
+      "",
+      `Your orders: ${appUrl("/seller/orders")}`,
     ].join(NL),
   };
 }

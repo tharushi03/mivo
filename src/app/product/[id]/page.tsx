@@ -6,25 +6,30 @@ import { notFound } from "next/navigation";
 import { cookies } from "next/headers";
 import { REF_COOKIE, productLinkPath, shopPath, whatsappLink } from "@/lib/shop-links";
 import { appUrl } from "@/lib/email/templates";
-import { getStorefrontProduct } from "@/lib/catalog";
+import { getStorefrontProduct, getStyleWith } from "@/lib/catalog";
 import { formatLKR } from "@/lib/format";
 import { AddToCart } from "./add-to-cart";
+import { StyleWithItem } from "./style-with-item";
 import { getProductReviews } from "@/lib/reviews";
+import { FIT_LABEL } from "@/lib/review-fit";
+import { categoryTrail } from "@/lib/categories";
 import { formatDate } from "@/lib/format";
 import { Stars } from "@/components/stars";
 
 export async function generateMetadata({ params }: PageProps<"/product/[id]">): Promise<Metadata> {
   const { id } = await params;
-  const product = await getStorefrontProduct(id);
+  const [product, reviews] = await Promise.all([getStorefrontProduct(id), getProductReviews(id)]);
   if (!product) return { title: "Product not found" };
   const description = product.description?.slice(0, 160) ?? `${product.title} from ${product.shopName}`;
+  // "★ 4.6 (12 reviews)" in the WhatsApp / Instagram link preview, once there are reviews.
+  const rating = reviews.count > 0 ? `★ ${reviews.average.toFixed(1)} (${reviews.count} ${reviews.count === 1 ? "review" : "reviews"}) · ` : "";
   return {
     title: product.title,
     description,
     // The preview card WhatsApp / Instagram / Facebook show when a boutique shares the link.
     openGraph: {
       title: `${product.title} · ${formatLKR(product.price)}`,
-      description: `${product.shopName} · ${description}`,
+      description: `${rating}${product.shopName} · ${description}`,
       images: [{ url: product.imageUrl, alt: product.title }],
       type: "website",
     },
@@ -46,6 +51,7 @@ async function ProductDetails({ params }: Pick<PageProps<"/product/[id]">, "para
   // Both cached; product is null unless active + from a verified seller.
   const [product, reviews] = await Promise.all([getStorefrontProduct(id), getProductReviews(id)]);
   if (!product) notFound();
+  const trail = categoryTrail(product.department, product.category, product.subcategory);
 
   return (
     <>
@@ -82,7 +88,16 @@ async function ProductDetails({ params }: Pick<PageProps<"/product/[id]">, "para
         <dl className="mt-6 grid grid-cols-2 gap-4 border-y border-border py-4 text-sm">
           <div>
             <dt className="text-text-secondary">Category</dt>
-            <dd className="font-medium">{product.category ?? "—"}</dd>
+            <dd className="font-medium">
+              {trail.length > 1
+                ? trail.map((t, i) => (
+                    <span key={t.href}>
+                      {i > 0 && <span className="text-text-secondary"> › </span>}
+                      <Link href={t.href} className="hover:text-accent-hover hover:underline">{t.label}</Link>
+                    </span>
+                  ))
+                : "—"}
+            </dd>
           </div>
           <div>
             <dt className="text-text-secondary">Sizes</dt>
@@ -118,6 +133,7 @@ async function ProductDetails({ params }: Pick<PageProps<"/product/[id]">, "para
         </ul>
       </div>
 
+      <StyleWith product={product} />
       <ReviewsSection reviews={reviews} />
     </div>
     </>
@@ -174,6 +190,37 @@ function SoldBy({ product }: { product: NonNullable<Awaited<ReturnType<typeof ge
   );
 }
 
+/** "Recommended" (Style It With): pieces from the same boutique that go with this one, each with its own + ADD. */
+async function StyleWith({ product }: { product: NonNullable<Awaited<ReturnType<typeof getStorefrontProduct>>> }) {
+  const items = await getStyleWith(product.id, product.sellerId, product.department, product.category);
+  if (items.length === 0) return null;
+  return (
+    <section aria-labelledby="recommended" className="border-t border-border pt-8 md:col-span-2">
+      <h2 id="recommended" className="text-2xl font-bold italic uppercase tracking-tight">
+        Recommended
+      </h2>
+      <p className="mt-1 text-sm text-text-secondary">From {product.shopName}, so it ships in the same package.</p>
+      <ul className="mt-6 grid gap-x-12 divide-y divide-border md:grid-cols-2 md:divide-y-0 md:gap-y-6">
+        {items.map((i) => (
+          <StyleWithItem
+            key={i.id}
+            href={`/product/${i.id}`}
+            sizes={i.sizes}
+            product={{
+              productId: i.id,
+              title: i.title,
+              price: Number(i.price),
+              imageUrl: i.imageUrl,
+              shopName: i.shopName,
+              sellerId: i.sellerId,
+            }}
+          />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 function ReviewsSection({ reviews }: { reviews: Awaited<ReturnType<typeof getProductReviews>> }) {
   return (
     <section id="reviews" className="scroll-mt-24 border-t border-border pt-8 md:col-span-2">
@@ -190,17 +237,6 @@ function ReviewsSection({ reviews }: { reviews: Awaited<ReturnType<typeof getPro
             <p className="mt-1 text-sm text-text-secondary">
               {reviews.count} verified {reviews.count === 1 ? "review" : "reviews"}
             </p>
-            <ul className="mt-4 space-y-1.5" aria-label="Rating breakdown">
-              {reviews.breakdown.map((n, i) => (
-                <li key={i} className="flex items-center gap-2 text-xs">
-                  <span className="w-6 text-right">{5 - i}★</span>
-                  <span className="h-2 flex-1 overflow-hidden rounded-full bg-muted">
-                    <span className="block h-full rounded-full bg-accent" style={{ width: `${(n / reviews.count) * 100}%` }} />
-                  </span>
-                  <span className="w-6 text-text-secondary">{n}</span>
-                </li>
-              ))}
-            </ul>
           </div>
           <ul className="divide-y divide-border">
             {reviews.latest.map((r) => (
@@ -211,6 +247,7 @@ function ReviewsSection({ reviews }: { reviews: Awaited<ReturnType<typeof getPro
                   <span className="rounded-full bg-success/15 px-2 py-0.5 text-[11px] font-medium text-success">Verified purchase</span>
                   <span className="text-xs text-text-secondary">{formatDate(r.createdAt)}</span>
                 </div>
+                {r.fit && <p className="mt-1 text-xs font-medium">Fit: {FIT_LABEL[r.fit]}</p>}
                 {r.comment && <p className="mt-2 whitespace-pre-line text-sm leading-relaxed text-text-secondary">{r.comment}</p>}
               </li>
             ))}

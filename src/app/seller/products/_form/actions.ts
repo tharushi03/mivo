@@ -2,17 +2,18 @@
 
 import { revalidatePath, updateTag } from "next/cache";
 import { redirect } from "next/navigation";
-import { and, eq, max } from "drizzle-orm";
+import { and, eq, inArray, max, ne } from "drizzle-orm";
 import { db } from "@/db";
-import { orderItems, productVariants, products } from "@/db/schema";
+import { orderItems, productPairings, productVariants, products } from "@/db/schema";
 import { requireSeller } from "@/lib/dal";
 import { PRODUCTS_TAG } from "@/lib/catalog";
 import { MAX_IMAGE_BYTES, deleteImage, detectImageType, saveImage } from "@/lib/storage";
-import { CATEGORIES } from "./categories";
+import { isValidPlacement } from "@/lib/categories";
 import { parseVariants, type VariantRow } from "./variants";
+import { parsePairWith } from "./pairings";
 
-type Field = "title" | "description" | "price" | "category" | "variants" | "image";
-type TextField = "title" | "description" | "price" | "category" | "isActive";
+type Field = "title" | "description" | "price" | "category" | "variants" | "image" | "pairWith";
+type TextField = "title" | "description" | "price" | "department" | "category" | "subcategory" | "isActive";
 
 export type ProductFormState = {
   error?: string;
@@ -20,7 +21,27 @@ export type ProductFormState = {
   values?: Partial<Record<TextField, string>>;
   /** The size rows to show again (what was sent, or fresh stock after a conflict). */
   variants?: VariantRow[];
+  /** "Style it with" ids to show again. */
+  pairWith?: string[];
 };
+
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/**
+ * Replaces a product's "Style it with" list. Only the boutique's own other products are
+ * kept (anything else is silently dropped), in the order they were ticked.
+ */
+async function savePairings(tx: Tx, productId: string, sellerId: string, ids: string[]) {
+  await tx.delete(productPairings).where(eq(productPairings.productId, productId));
+  if (ids.length === 0) return;
+  const own = await tx
+    .select({ id: products.id })
+    .from(products)
+    .where(and(inArray(products.id, ids), eq(products.sellerId, sellerId), ne(products.id, productId)));
+  const ok = new Set(own.map((o) => o.id));
+  const rows = ids.filter((id) => ok.has(id)).map((pairedProductId, position) => ({ productId, pairedProductId, position }));
+  if (rows.length > 0) await tx.insert(productPairings).values(rows);
+}
 
 class ProductConflict extends Error {
   constructor(message: string, public rows?: VariantRow[]) {
@@ -37,7 +58,9 @@ function readDetails(formData: FormData) {
     title: text("title"),
     description: text("description"),
     price: text("price"),
+    department: text("department"),
     category: text("category"),
+    subcategory: text("subcategory"),
     isActive: formData.get("isActive") === "on" ? "on" : "",
   };
 
@@ -51,12 +74,18 @@ function readDetails(formData: FormData) {
   if (!values.price || !Number.isFinite(price) || price <= 0) fieldErrors.price = "Enter a price above 0.";
   else if (price > 99_999_999) fieldErrors.price = "That price is too high.";
 
-  if (!(CATEGORIES as readonly string[]).includes(values.category)) fieldErrors.category = "Choose a category.";
+  // Department › category › sub-category must be a real place in the menu.
+  if (!isValidPlacement(values.department, values.category, values.subcategory)) {
+    fieldErrors.category = "Choose a section, a category and (where asked) a sub-category.";
+  }
 
   const { variants, rows, error: variantError } = parseVariants(formData);
   if (variantError) fieldErrors.variants = variantError;
 
-  return { values, price, variants, rows, fieldErrors };
+  const pairing = parsePairWith(formData);
+  if (pairing.error) fieldErrors.pairWith = pairing.error;
+
+  return { values, price, variants, rows, pairWith: pairing.ids, fieldErrors };
 }
 
 /** Reads and checks the uploaded photo. `required` is false when editing (keep the old one). */
@@ -84,10 +113,10 @@ export async function createProduct(_prev: ProductFormState, formData: FormData)
   const { profile } = await requireSeller();
   if (!profile) return { error: "Your account has no boutique profile. Please contact MIVO support." };
 
-  const { values, price, variants, rows, fieldErrors } = readDetails(formData);
+  const { values, price, variants, rows, pairWith, fieldErrors } = readDetails(formData);
   const image = await readImage(formData, true);
   if (image.error) fieldErrors.image = image.error;
-  if (Object.keys(fieldErrors).length > 0 || !image.buf || !image.ext) return { fieldErrors, values, variants: rows };
+  if (Object.keys(fieldErrors).length > 0 || !image.buf || !image.ext) return { fieldErrors, values, variants: rows, pairWith };
 
   const imageUrl = await saveImage(image.buf, image.ext);
   try {
@@ -100,7 +129,9 @@ export async function createProduct(_prev: ProductFormState, formData: FormData)
           title: values.title,
           description: values.description || null,
           price: price.toFixed(2),
+          department: values.department,
           category: values.category,
+          subcategory: values.subcategory || null,
           imageUrl,
           isActive: true,
         })
@@ -108,11 +139,12 @@ export async function createProduct(_prev: ProductFormState, formData: FormData)
       await tx
         .insert(productVariants)
         .values(variants.map((v, position) => ({ productId: product.id, size: v.size, stock: v.stock, position })));
+      await savePairings(tx, product.id, profile.id, pairWith);
     });
   } catch (err) {
     await deleteImage(imageUrl); // don't leave orphaned files
     console.error("createProduct failed", err);
-    return { error: "Could not save the product. Please try again.", values, variants: rows };
+    return { error: "Could not save the product. Please try again.", values, variants: rows, pairWith };
   }
 
   refreshProductPages();
@@ -141,10 +173,10 @@ export async function updateProduct(_prev: ProductFormState, formData: FormData)
   const productId = String(formData.get("productId") ?? "");
   if (!UUID.test(productId)) return { error: "Invalid product." };
 
-  const { values, price, variants, rows, fieldErrors } = readDetails(formData);
+  const { values, price, variants, rows, pairWith, fieldErrors } = readDetails(formData);
   const image = await readImage(formData, false);
   if (image.error) fieldErrors.image = image.error;
-  if (Object.keys(fieldErrors).length > 0) return { fieldErrors, values, variants: rows };
+  if (Object.keys(fieldErrors).length > 0) return { fieldErrors, values, variants: rows, pairWith };
 
   // Save the new photo first; it's deleted again if the update fails.
   const newImageUrl = image.buf && image.ext ? await saveImage(image.buf, image.ext) : null;
@@ -218,19 +250,22 @@ export async function updateProduct(_prev: ProductFormState, formData: FormData)
           title: values.title,
           description: values.description || null,
           price: price.toFixed(2),
+          department: values.department,
           category: values.category,
+          subcategory: values.subcategory || null,
           isActive: values.isActive === "on",
           ...(newImageUrl ? { imageUrl: newImageUrl } : {}),
         })
         .where(eq(products.id, productId));
+      await savePairings(tx, productId, profile.id, pairWith);
 
       if (newImageUrl) oldImageUrl = product.imageUrl;
     });
   } catch (err) {
     if (newImageUrl) await deleteImage(newImageUrl);
-    if (err instanceof ProductConflict) return { error: err.message, values, variants: err.rows ?? rows };
+    if (err instanceof ProductConflict) return { error: err.message, values, variants: err.rows ?? rows, pairWith };
     console.error("updateProduct failed", err);
-    return { error: "Could not save your changes. Please try again.", values, variants: rows };
+    return { error: "Could not save your changes. Please try again.", values, variants: rows, pairWith };
   }
 
   // Only after the new one is committed, and only if no order shows the old photo

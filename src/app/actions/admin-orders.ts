@@ -1,15 +1,16 @@
 "use server";
 
-// Distributed fulfilment: every boutique ships its own package straight to the buyer.
+// Fulfilment: one package per boutique, sent to the buyer through the MIVO Hub (see "MIVO Hub" below).
 //
 //   order placed ──▶ one shipment per boutique (PENDING)
-//   boutique enters courier + tracking ──▶ shipment DISPATCHED (buyer emailed)
+//   boutique packs, presses Ready ──▶ admin presses In Hub when it arrives at the MIVO Hub
+//   admin enters courier + tracking when the courier collects ──▶ DISPATCHED (buyer emailed)
 //   admin confirms delivery / COD cash received ──▶ shipment DELIVERED
 //
 //   order.orderStatus is derived from its shipments (syncOrderStatus):
 //     none sent → PENDING · some sent → PARTIALLY_DISPATCHED · all sent → DISPATCHED · all delivered → DELIVERED
 //
-//   Bank transfer orders must be PAID before any boutique can dispatch.
+//   Bank transfer orders must be PAID before a boutique packs or MIVO sends anything.
 //   Admin can cancel the whole order until any package is delivered, cancel one
 //   package, or record a return of a delivered package (src/lib/fulfilment.ts).
 //
@@ -53,7 +54,7 @@ function readId(formData: FormData, key: string) {
 
 /** Locks the order row; returns its status fields, or null if it doesn't exist. */
 const COD_COURIER_ONLY =
-  "This is a cash-on-delivery package: it must be booked on MIVO's account with one of the couriers in the list, so the cash comes to MIVO.";
+  "This is a cash-on-delivery package: book it on MIVO's account with a courier ticked as a MIVO COD account, so the cash comes to MIVO.";
 
 async function lockOrder(tx: Tx, orderId: string) {
   const [order] = await tx
@@ -318,16 +319,87 @@ export async function restockShipment(_prev: ActionResult, formData: FormData): 
   return { ok: true };
 }
 
-// ---------------------------------------------------------------- Seller
+// ---------------------------------------------------------------- MIVO Hub
+//
+//   boutique packs ──▶ "Ready" (packedAt) ──▶ drops it at the MIVO Hub
+//   admin receives it ──▶ "In Hub" (inHubAt)
+//   admin books the courier ──▶ courier + tracking: DISPATCHED (buyer emailed)
+//
+// The package stays PENDING until it leaves the hub, so cancelling, stock and the
+// order status work as before.
 
-/**
- * A boutique hands ITS package to a courier: records the courier and tracking
- * number, marks the shipment DISPATCHED and emails the buyer.
- */
-export async function dispatchShipment(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
+/** Shared checks: locks the order and the package; returns an error or the package. */
+async function lockPackageForHub(tx: Tx, orderId: string, shipmentId: string) {
+  const order = await lockOrder(tx, orderId);
+  if (!order) return { error: "Order not found." };
+  if (order.status === "CANCELLED") return { error: "This order was cancelled. Don't send it." };
+  if (order.method === "BANK_TRANSFER" && order.payment !== "PAID") return { error: "Wait until MIVO confirms the bank transfer." };
+  const [pkg] = await tx
+    .select({ sellerId: shipments.sellerId, status: shipments.status, packedAt: shipments.packedAt, inHubAt: shipments.inHubAt })
+    .from(shipments)
+    .where(and(eq(shipments.id, shipmentId), eq(shipments.orderId, orderId)))
+    .for("update");
+  if (!pkg) return { error: "Package not found." };
+  if (pkg.status === "CANCELLED") return { error: "This package was cancelled. Don't send it." };
+  if (pkg.status !== "PENDING") return { error: "This package has already left the MIVO Hub." };
+  return { order, pkg };
+}
+
+/** The boutique has packed ITS package and will drop it at the MIVO Hub. */
+export async function markPackageReady(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
   const { profile } = await requireSeller();
   if (!profile) return { error: "No boutique profile." };
+  const shipmentId = readId(formData, "shipmentId");
+  if (!shipmentId) return { error: "Invalid package." };
+  const orderId = await orderIdOfShipment(shipmentId);
+  if (!orderId) return { error: "Package not found." };
 
+  const error = await db.transaction(async (tx) => {
+    const r = await lockPackageForHub(tx, orderId, shipmentId);
+    if ("error" in r) return r.error;
+    // Another boutique's package looks the same as a missing one.
+    if (r.pkg.sellerId !== profile.id) return "Package not found.";
+    if (r.pkg.packedAt) return "This package is already marked ready.";
+    await tx.update(shipments).set({ packedAt: new Date() }).where(eq(shipments.id, shipmentId));
+    return null;
+  });
+  if (error) return { error };
+  refreshOrderPages(orderId);
+  return { ok: true };
+}
+
+/**
+ * Admin: the parcel has arrived at the MIVO Hub. Also accepted when the boutique
+ * dropped it off without pressing Ready (then it counts as packed now).
+ */
+export async function markInHub(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
+  const admin = await requireAdmin();
+  const shipmentId = readId(formData, "shipmentId");
+  if (!shipmentId) return { error: "Invalid package." };
+  const orderId = await orderIdOfShipment(shipmentId);
+  if (!orderId) return { error: "Package not found." };
+
+  const error = await db.transaction(async (tx) => {
+    const r = await lockPackageForHub(tx, orderId, shipmentId);
+    if ("error" in r) return r.error;
+    if (r.pkg.inHubAt) return "This package is already in the hub.";
+    const now = new Date();
+    await tx.update(shipments).set({ inHubAt: now, packedAt: r.pkg.packedAt ?? now }).where(eq(shipments.id, shipmentId));
+    return null;
+  });
+  if (error) return { error };
+  refreshOrderPages(orderId);
+  await audit(admin.id, "in_hub", { type: "shipment", id: shipmentId }, `Received the ${await packageLabel(shipmentId)} at the MIVO Hub`);
+  return { ok: true };
+}
+
+/**
+ * Admin: the courier has collected the parcel from the MIVO Hub. Records the courier
+ * and tracking number, marks the package DISPATCHED and emails the buyer. Every hub
+ * parcel is booked on MIVO's courier account, so COD cash comes to MIVO.
+ */
+export async function dispatchShipment(_prev: ActionResult, formData: FormData): Promise<ActionResult> {
+  const admin = await requireAdmin();
   const shipmentId = readId(formData, "shipmentId");
   const courierId = readId(formData, "courierId");
   const tracking = normaliseTracking(String(formData.get("trackingNumber") ?? ""));
@@ -339,37 +411,23 @@ export async function dispatchShipment(_prev: ActionResult, formData: FormData):
   if (!orderId) return { error: "Package not found." };
 
   const error = await db.transaction(async (tx) => {
-    const order = await lockOrder(tx, orderId);
-    if (!order) return "Order not found.";
-    if (order.status === "CANCELLED") return "This order was cancelled. Don't send it.";
-    if (order.method === "BANK_TRANSFER" && order.payment !== "PAID") return "Wait until MIVO confirms the bank transfer.";
+    const r = await lockPackageForHub(tx, orderId, shipmentId);
+    if ("error" in r) return r.error;
+    if (!r.pkg.inHubAt) return "Mark this package In Hub first.";
 
     const [courier] = await tx
       .select({ id: couriers.id, supportsCod: couriers.supportsCod })
       .from(couriers)
       .where(and(eq(couriers.id, courierId), eq(couriers.isActive, true)))
-      .for("share"); // so the admin can't switch off its COD account mid-dispatch
+      .for("share"); // so its COD account can't be switched off mid-dispatch
     if (!courier) return "Choose a courier from the list.";
-    if (order.method === "COD") {
-      // The cash goes to whoever owns the account the parcel is booked on: it must be MIVO.
-      if (!courier.supportsCod) return COD_COURIER_ONLY;
-      if (formData.get("bookedOnMivoAccount") !== "on") return "Confirm you booked it on MIVO's account with the cash-on-delivery amount shown.";
-    }
-
-    const [pkg] = await tx
-      .select({ sellerId: shipments.sellerId, status: shipments.status })
-      .from(shipments)
-      .where(eq(shipments.id, shipmentId))
-      .for("update");
-    // Another boutique's package looks the same as a missing one.
-    if (!pkg || pkg.sellerId !== profile.id) return "Package not found.";
-    if (pkg.status !== "PENDING") return "This package was already dispatched.";
+    // The cash goes to whoever owns the account the parcel is booked on: it must be MIVO.
+    if (r.order.method === "COD" && !courier.supportsCod) return COD_COURIER_ONLY;
 
     await tx
       .update(shipments)
       .set({ status: "DISPATCHED", courierId, trackingNumber: tracking, dispatchedAt: new Date() })
       .where(eq(shipments.id, shipmentId));
-
     await syncOrderStatus(tx, orderId);
     return null;
   });
@@ -377,6 +435,7 @@ export async function dispatchShipment(_prev: ActionResult, formData: FormData):
   if (error) return { error };
   refreshOrderPages(orderId);
   notifyLater("package dispatched (buyer)", () => notifyBuyerShipmentDispatched(shipmentId));
+  await audit(admin.id, "dispatch_package", { type: "shipment", id: shipmentId }, `Sent the ${await packageLabel(shipmentId)} from the MIVO Hub (${tracking})`);
   return { ok: true };
 }
 

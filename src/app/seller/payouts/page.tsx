@@ -16,8 +16,8 @@ export default function SellerPayoutsPage({ searchParams }: PageProps<"/seller/p
       <h1 className="text-3xl font-bold">My earnings</h1>
       <p className="mb-6 mt-1 text-text-secondary">
         Your earnings are your sales minus MIVO&apos;s commission. They become available {PAYOUT_HOLD_DAYS} days after
-        delivery (the customer&apos;s return window), and MIVO sends them to your bank account on the next payout day. For
-        prepaid orders, the delivery fee you paid the courier is repaid with your payout.
+        delivery (the customer&apos;s return window), and MIVO sends them to your bank account on the next payout day. MIVO
+        books and pays the courier from the MIVO Hub, so delivery costs you nothing.
       </p>
       <Suspense fallback={<div className="h-96 animate-pulse rounded-xl border border-border bg-surface" />}>
         <Payouts searchParams={searchParams} />

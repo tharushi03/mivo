@@ -1,7 +1,7 @@
 import { Suspense } from "react";
 import Image from "next/image";
 import Link from "next/link";
-import { and, asc, count, desc, eq, inArray, or, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { orderItems, orders, productVariants, products, shipments } from "@/db/schema";
 import { requireSeller } from "@/lib/dal";
@@ -10,6 +10,7 @@ import { ConfirmEmailBanner } from "@/components/confirm-email-banner";
 import { isEmailConfirmed } from "@/lib/email-verification";
 import { CopyLink } from "@/components/copy-link";
 import { appUrl } from "@/lib/email/templates";
+import { categoryLabel, isValidPlacement } from "@/lib/categories";
 import { productLinkPath, shopPath } from "@/lib/shop-links";
 
 const lkr = new Intl.NumberFormat("en-LK", { style: "currency", currency: "LKR" });
@@ -39,11 +40,12 @@ async function getSellerStats(sellerId: string) {
       .select({ n: count() })
       .from(shipments)
       .innerJoin(orders, eq(shipments.orderId, orders.id))
-      // Packages ready to ship: COD, or bank transfer that MIVO has confirmed.
+      // Packages to pack: COD, or bank transfer that MIVO has confirmed, not yet marked Ready.
       .where(
         and(
           eq(shipments.sellerId, sellerId),
           eq(shipments.status, "PENDING"),
+          isNull(shipments.packedAt),
           or(eq(orders.paymentMethod, "COD"), eq(orders.paymentStatus, "PAID")),
         ),
       ),
@@ -51,14 +53,18 @@ async function getSellerStats(sellerId: string) {
       .select({ n: count() })
       .from(products)
       .where(and(eq(products.sellerId, sellerId), eq(products.isActive, true))),
-    // This boutique's packages in orders that came through its own link.
+    // Where this boutique's orders came from: its own link, or the MIVO website (no boutique link).
+    // An order through ANOTHER boutique's link that included this boutique's item counts as neither.
     db
-      .select({ n: count(), mine: sql<number>`count(*) filter (where ${orders.referrerSellerId} = ${sellerId})::int` })
+      .select({
+        mine: sql<number>`count(*) filter (where ${orders.referrerSellerId} = ${sellerId})::int`,
+        website: sql<number>`count(*) filter (where ${orders.referrerSellerId} is null)::int`,
+      })
       .from(shipments)
       .innerJoin(orders, eq(shipments.orderId, orders.id))
       .where(and(eq(shipments.sellerId, sellerId), sql`${orders.orderStatus} <> 'CANCELLED'`)),
   ]);
-  return { revenue: Number(revenue.total), toShip: toShip.n, activeProducts: active.n, ordersTotal: fromLink.n, ordersFromLink: fromLink.mine };
+  return { revenue: Number(revenue.total), toShip: toShip.n, activeProducts: active.n, ordersFromLink: fromLink.mine, ordersFromWebsite: fromLink.website };
 }
 
 async function SellerDashboard({ searchParams }: Pick<PageProps<"/seller/dashboard">, "searchParams">) {
@@ -71,7 +77,7 @@ async function SellerDashboard({ searchParams }: Pick<PageProps<"/seller/dashboa
         getSellerStats(profile.id),
         db.select().from(products).where(eq(products.sellerId, profile.id)).orderBy(desc(products.createdAt)),
       ])
-    : [{ revenue: 0, toShip: 0, activeProducts: 0, ordersTotal: 0, ordersFromLink: 0 }, []];
+    : [{ revenue: 0, toShip: 0, activeProducts: 0, ordersFromLink: 0, ordersFromWebsite: 0 }, []];
 
   // Stock per size for every product.
   const variants = productRows.length
@@ -88,13 +94,10 @@ async function SellerDashboard({ searchParams }: Pick<PageProps<"/seller/dashboa
 
   const cards = [
     { label: "Total Sales", value: lkr.format(stats.revenue), hint: "From your delivered packages", href: "/seller/payouts" },
-    { label: "Packages to Ship", value: stats.toShip, hint: "Ready for you to send", href: "/seller/orders" },
+    { label: "Packages to Pack", value: stats.toShip, hint: "Paid orders for you to pack", href: "/seller/orders" },
     { label: "Active Products", value: stats.activeProducts, hint: "Visible to buyers once verified" },
-    {
-      label: "Orders from your link",
-      value: stats.ordersFromLink,
-      hint: `${stats.ordersTotal - stats.ordersFromLink} more came from the MIVO website`,
-    },
+    { label: "Orders from your link", value: stats.ordersFromLink, hint: "Customers you sent your MIVO link to" },
+    { label: "Orders from MIVO website", value: stats.ordersFromWebsite, hint: "New customers who found you on MIVO" },
   ];
   const shopUrl = profile?.slug ? appUrl(shopPath(profile.slug)) : null;
 
@@ -157,7 +160,7 @@ async function SellerDashboard({ searchParams }: Pick<PageProps<"/seller/dashboa
         </section>
       )}
 
-      <div className="mb-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mb-10 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {cards.map((c) => {
           const body = (
             <>
@@ -212,9 +215,16 @@ async function SellerDashboard({ searchParams }: Pick<PageProps<"/seller/dashboa
                     {p.title}
                   </p>
                   <p className="text-sm font-semibold text-accent-hover">{lkr.format(Number(p.price))}</p>
-                  <p className="mt-1 truncate text-xs text-text-secondary">
-                    {p.category} · {p.totalStock} in stock
+                  <p className="mt-1 truncate text-xs text-text-secondary" title={categoryLabel(p.department, p.category, p.subcategory)}>
+                    {categoryLabel(p.department, p.category, p.subcategory)}
                   </p>
+                  <p className="text-xs text-text-secondary">{p.totalStock} in stock</p>
+                  {/* Older products (before Women / Men / Kids) may need a sub-category to show in the menu. */}
+                  {!isValidPlacement(p.department, p.category ?? "", p.subcategory ?? "") && (
+                    <Link href={`/seller/products/${p.id}/edit`} className="mt-1 block text-xs font-medium text-error underline">
+                      Choose its category so it shows in the menu
+                    </Link>
+                  )}
                   <ul className="mt-2 flex flex-wrap gap-1" aria-label="Stock per size">
                     {p.sizes.map((v) => (
                       <li

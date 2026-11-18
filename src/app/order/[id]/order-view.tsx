@@ -12,6 +12,8 @@ import { formatDateTime, formatLKR } from "@/lib/format";
 import { OrderStatusBadge } from "@/components/order-status-badge";
 import { ShipmentStatusBadge } from "@/components/shipment-status-badge";
 import { SlipUpload } from "./slip-upload";
+import { ReviewButton } from "@/app/orders/review-button";
+import { getMyReviewsForOrder } from "@/lib/reviews";
 
 /** How the buyer reached the page: logged in, or through a guest order's secret link. */
 export type OrderAccess = { kind: "account" } | { kind: "guest"; key: string };
@@ -19,15 +21,18 @@ export type OrderAccess = { kind: "account" } | { kind: "guest"; key: string };
 type Order = NonNullable<Awaited<ReturnType<typeof getOrderWithItems>>>;
 
 /** The buyer's view of one order. Used by /order/[id] (accounts) and /track/[id]/[key] (guests). */
-export function OrderView({ order, access }: { order: Order; access: OrderAccess }) {
+export async function OrderView({ order, access }: { order: Order; access: OrderAccess }) {
   const guestKey = access.kind === "guest" ? access.key : null;
+  // Delivered items can be reviewed (stars, fit, comment) right here.
+  const anyDelivered = order.packages.some((p) => p.status === "DELIVERED");
+  const myReviews = anyDelivered ? await getMyReviewsForOrder(order.id, order.buyerId) : new Map();
   const invoiceHref = guestKey ? `/api/invoice/${order.id}?k=${guestKey}` : `/api/invoice/${order.id}`;
   const slipHref = guestKey ? `/track/${order.id}/${guestKey}/slip` : `/order/${order.id}/slip`;
   const ref = orderRef(order.id);
   const subtotal = Number(order.totalAmount) - Number(order.deliveryFee);
   const awaitingTransfer = order.paymentMethod === "BANK_TRANSFER" && order.paymentStatus === "PENDING" && order.orderStatus !== "CANCELLED";
   const bank = getPlatformBankDetails();
-  const canCancel = buyerCanCancel(order.orderStatus, order.packages.map((p) => p.status));
+  const canCancel = buyerCanCancel(order.orderStatus, order.packages);
   const isOpen = order.orderStatus !== "CANCELLED" && order.orderStatus !== "DELIVERED";
 
   return (
@@ -144,7 +149,7 @@ export function OrderView({ order, access }: { order: Order; access: OrderAccess
           </h2>
           {order.packages.length > 1 && (
             <p className="mt-0.5 text-sm text-text-secondary">
-              Each boutique ships its own package, so they may arrive on different days.
+              Each boutique packs its own package, so they may arrive on different days.
             </p>
           )}
         </div>
@@ -178,7 +183,11 @@ export function OrderView({ order, access }: { order: Order; access: OrderAccess
                 <p className="mt-3 text-sm text-text-secondary">
                   {awaitingTransfer
                     ? "The boutique will pack this once your payment is confirmed."
-                    : `${pkg.shopName} is preparing this package. You'll get an email with the tracking number when it ships.`}
+                    : pkg.inHubAt
+                      ? "Your package is at the MIVO Hub and will be handed to the courier soon. You'll get an email with the tracking number."
+                      : pkg.packedAt
+                        ? `${pkg.shopName} has packed your order. It's on its way to the MIVO Hub.`
+                        : `${pkg.shopName} is preparing this package. You'll get an email with the tracking number when it ships.`}
                 </p>
               )}
 
@@ -194,7 +203,20 @@ export function OrderView({ order, access }: { order: Order; access: OrderAccess
                         Size {i.size} · Qty {i.quantity} · {formatLKR(i.price)} each
                       </p>
                     </div>
-                    <p className="shrink-0 text-sm font-semibold">{formatLKR(Number(i.price) * i.quantity)}</p>
+                    <div className="shrink-0 text-right">
+                      <p className="text-sm font-semibold">{formatLKR(Number(i.price) * i.quantity)}</p>
+                      {pkg.status === "DELIVERED" && (
+                        <div className="mt-1.5">
+                          <ReviewButton
+                            orderId={order.id}
+                            productId={i.productId}
+                            title={i.title}
+                            existing={myReviews.get(i.productId) ?? null}
+                            guestKey={guestKey}
+                          />
+                        </div>
+                      )}
+                    </div>
                   </li>
                 ))}
               </ul>

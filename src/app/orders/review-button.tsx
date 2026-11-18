@@ -2,6 +2,7 @@
 
 import { useActionState, useEffect, useId, useRef, useState } from "react";
 import { submitReview, type ReviewState } from "@/app/actions/reviews";
+import { FIT_LABEL, FIT_OPTIONS, type Fit } from "@/lib/review-fit";
 
 const LABELS = ["", "Poor", "Fair", "Good", "Very good", "Excellent"];
 const MAX_COMMENT = 1000;
@@ -10,16 +11,19 @@ type Props = {
   orderId: string;
   productId: string;
   title: string;
-  existing: { rating: number; comment: string | null } | null;
+  existing: { rating: number; comment: string | null; fit?: Fit | null } | null;
+  /** Guests (no account): the key from their secret order link. */
+  guestKey?: string | null;
 };
 
-/** "Leave a Review" button that opens a dialog with a star picker and comment box. */
-export function ReviewButton({ orderId, productId, title, existing }: Props) {
+/** "Leave a Review" button that opens a dialog with a star picker, a fit question and a comment box. */
+export function ReviewButton({ orderId, productId, title, existing, guestKey }: Props) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [state, formAction, pending] = useActionState<ReviewState, FormData>(submitReview, {});
   const [rating, setRating] = useState(existing?.rating ?? 0);
   const [hover, setHover] = useState(0);
   const [comment, setComment] = useState(existing?.comment ?? "");
+  const [fit, setFit] = useState<Fit | "">(existing?.fit ?? "");
   const headingId = useId();
 
   // Close the dialog once the review is saved.
@@ -49,6 +53,7 @@ export function ReviewButton({ orderId, productId, title, existing }: Props) {
         <form action={formAction} className="p-6">
           <input type="hidden" name="orderId" value={orderId} />
           <input type="hidden" name="productId" value={productId} />
+          {guestKey && <input type="hidden" name="key" value={guestKey} />}
 
           <h2 id={headingId} className="text-lg font-bold">
             {existing ? "Edit your review" : "Leave a review"}
@@ -86,6 +91,29 @@ export function ReviewButton({ orderId, productId, title, existing }: Props) {
             </div>
           </fieldset>
 
+          <fieldset className="mt-5">
+            <legend className="mb-2 text-sm font-medium">
+              How did it fit? <span className="font-normal text-text-secondary">(optional)</span>
+            </legend>
+            <div className="flex flex-wrap gap-2">
+              {FIT_OPTIONS.map((f) => (
+                <label key={f} className="cursor-pointer">
+                  <input
+                    type="radio"
+                    name="fit"
+                    value={f}
+                    checked={fit === f}
+                    onChange={() => setFit(f)}
+                    className="peer sr-only"
+                  />
+                  <span className="block rounded-full border border-border px-3 py-1.5 text-sm transition-colors peer-checked:border-accent peer-checked:bg-accent/10 peer-checked:font-medium peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-accent">
+                    {FIT_LABEL[f]}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </fieldset>
+
           <label className="mt-5 block">
             <span className="mb-1 block text-sm font-medium">
               Your review <span className="font-normal text-text-secondary">(optional)</span>
@@ -96,7 +124,7 @@ export function ReviewButton({ orderId, productId, title, existing }: Props) {
               onChange={(e) => setComment(e.target.value)}
               rows={4}
               maxLength={MAX_COMMENT}
-              placeholder="How was the fit, fabric and quality?"
+              placeholder="How were the fabric, colour and quality? Which size did you take?"
               className="w-full rounded-md border border-border bg-background p-2.5 text-sm outline-none focus:border-accent"
             />
             <span className="block text-right text-xs text-text-secondary">

@@ -11,8 +11,21 @@ export const metadata: Metadata = {
   description: "Open your boutique on MIVO and reach shoppers across Sri Lanka.",
 };
 
+// Where boutiques send questions about applying.
+const APPLY_EMAIL = "askmivo@gmail.com";
+
 const STEPS = [
-  { title: "Apply in 2 minutes", text: "Tell us your boutique name and Instagram. You can start listing right away." },
+  {
+    title: "Apply in 2 minutes",
+    text: (
+      <>
+        Tell us your boutique name and contact number. You can start listing right away. Questions? Email{" "}
+        <a href={`mailto:${APPLY_EMAIL}`} className="font-medium text-accent-hover hover:underline">
+          {APPLY_EMAIL}
+        </a>
+      </>
+    ),
+  },
   { title: "Get approved", text: "The MIVO team reviews your boutique, usually within 2 working days. Then your products go live." },
   { title: "Ship & get paid", text: "Pack each order, hand it to a courier and enter the tracking number. We pay you after delivery." },
 ];

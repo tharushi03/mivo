@@ -70,6 +70,8 @@ export async function getOrderWithItems(orderId: string, owner?: OrderOwner) {
       courierName: couriers.name,
       trackingNumber: shipments.trackingNumber,
       deliveryFee: shipments.deliveryFee,
+      packedAt: shipments.packedAt,
+      inHubAt: shipments.inHubAt,
       dispatchedAt: shipments.dispatchedAt,
       deliveredAt: shipments.deliveredAt,
       returnedAt: shipments.returnedAt,

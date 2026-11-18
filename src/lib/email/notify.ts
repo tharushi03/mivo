@@ -9,7 +9,7 @@ import { getPlatformBankDetails, orderRef, paymentDeadline } from "@/lib/payment
 import { buyerOrderPath } from "@/lib/guest-orders";
 import { formatDateTime } from "@/lib/format";
 import { fromCents, toCents } from "@/lib/pricing";
-import { getCodCouriers } from "@/lib/couriers";
+import { getHub } from "@/lib/hub";
 import { sendEmail } from "./send";
 import {
   buyerSlipRejectedEmail,
@@ -56,8 +56,8 @@ async function itemsOf(orderId: string, sellerId: string) {
 }
 
 /**
- * Trigger 1: tell each boutique in the order what to ship and where.
- * Each boutique sees only ITS OWN items, plus the delivery details it needs to ship.
+ * Trigger 1: tell each boutique in the order what to pack, and where the MIVO Hub is.
+ * Each boutique sees only ITS OWN items.
  */
 export async function notifySellersOfNewOrder(orderId: string) {
   const [order] = await db
@@ -86,7 +86,7 @@ export async function notifySellersOfNewOrder(orderId: string) {
 
   const ref = orderRef(orderId);
   const cod = order.paymentMethod === "COD" && order.paymentStatus !== "PAID";
-  const codCouriers = cod ? await getCodCouriers() : [];
+  const hub = getHub();
   await Promise.all(
     packages.map(async (p) => {
       const { items, totalCents } = await itemsOf(orderId, p.sellerId);
@@ -96,10 +96,8 @@ export async function notifySellersOfNewOrder(orderId: string) {
           shopName: p.shopName,
           orderRef: ref,
           items,
-          shipTo: { name: order.recipientName, address: order.shippingAddress, phone: order.phoneNumber },
           codAmount: cod ? fromCents(totalCents + toCents(p.deliveryFee)) : null,
-          deliveryFee: p.deliveryFee,
-          codCouriers,
+          hub,
         }),
       );
     }),

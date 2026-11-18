@@ -28,12 +28,19 @@ const heldShipment = and(deliveredShipment, sql`${shipments.deliveredAt} > ${hol
 export const payableItem = and(isNull(orderItems.payoutId), releasedShipment);
 
 /**
- * Prepaid (bank transfer) packages: the boutique booked and paid the courier itself,
- * so MIVO repays the delivery fee the buyer paid for that package. COD packages go on
- * MIVO's courier accounts, so there is nothing to repay. Needs `orders` joined.
+ * Prepaid (bank transfer) packages the boutique booked and paid the courier for itself
+ * (before the MIVO Hub): MIVO repays the delivery fee the buyer paid for that package.
+ * Nothing to repay for COD packages (MIVO's courier accounts) or for parcels sent
+ * through the MIVO Hub (packedAt set: MIVO paid the courier). Needs `orders` joined.
  */
 const repayable = (window: SQL | undefined) =>
-  and(isNull(shipments.payoutId), window, eq(orders.paymentMethod, "BANK_TRANSFER"), gt(shipments.deliveryFee, "0"));
+  and(
+    isNull(shipments.payoutId),
+    window,
+    eq(orders.paymentMethod, "BANK_TRANSFER"),
+    gt(shipments.deliveryFee, "0"),
+    isNull(shipments.packedAt),
+  );
 export const reimbursableShipment = repayable(releasedShipment);
 
 type ItemRow = { price: string; quantity: number; commissionRate: string };

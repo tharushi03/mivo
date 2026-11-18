@@ -58,12 +58,12 @@ export async function syncOrderStatus(tx: Tx, orderId: string) {
 }
 
 /**
- * The buyer may cancel only while NO boutique has handed its package to a courier:
- * every (non-cancelled) package must still be PENDING.
+ * The buyer may cancel only while every (non-cancelled) package is still with its
+ * boutique: PENDING and not yet handed in at the MIVO Hub.
  */
-export function buyerCanCancel(orderStatus: string, packageStatuses: ShipmentStatus[]) {
-  const open = packageStatuses.filter((s) => s !== "CANCELLED");
-  return orderStatus === "PENDING" && open.length > 0 && open.every((s) => s === "PENDING");
+export function buyerCanCancel(orderStatus: string, packages: { status: ShipmentStatus; inHubAt: Date | null }[]) {
+  const open = packages.filter((p) => p.status !== "CANCELLED");
+  return orderStatus === "PENDING" && open.length > 0 && open.every((p) => p.status === "PENDING" && !p.inHubAt);
 }
 
 async function lockOrder(tx: Tx, orderId: string) {
@@ -178,11 +178,14 @@ export async function cancelOrderTx(
     return { error: "Still within the time to send a new slip; not expiring." };
   }
 
-  const pkgs = await tx.select({ sellerId: shipments.sellerId, status: shipments.status }).from(shipments).where(eq(shipments.orderId, orderId));
+  const pkgs = await tx
+    .select({ sellerId: shipments.sellerId, status: shipments.status, inHubAt: shipments.inHubAt })
+    .from(shipments)
+    .where(eq(shipments.orderId, orderId));
 
   if (by.role === "BUYER") {
-    if (!buyerCanCancel(order.status, pkgs.map((p) => p.status))) {
-      return { error: "A boutique has already sent part of this order, so it can't be cancelled here. Please contact MIVO support." };
+    if (!buyerCanCancel(order.status, pkgs)) {
+      return { error: "Part of this order is already on its way, so it can't be cancelled here. Please contact MIVO support." };
     }
   } else if (pkgs.some((p) => p.status === "DELIVERED")) {
     return { error: "A package in this order was already delivered. Cancel the other packages one by one instead." };

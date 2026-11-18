@@ -4,23 +4,21 @@ import Link from "next/link";
 import { and, count, desc, eq, inArray, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { couriers, orderItems, orders, products, shipments } from "@/db/schema";
+import { getHub } from "@/lib/hub";
 import { requireSeller } from "@/lib/dal";
 import { orderRef } from "@/lib/payments";
 import { formatDateTime, formatLKR } from "@/lib/format";
-import { codCouriers, getActiveCouriers } from "@/lib/couriers";
-import { DispatchForm } from "@/components/dispatch-form";
 import { isOverdue } from "@/lib/shipments";
 import { ShipmentStatusBadge } from "@/components/shipment-status-badge";
 import { ActionForm, SubmitButton } from "@/components/action-form";
 import { EmptyState } from "@/components/empty-state";
 import { PAGE_SIZE, Pagination, parsePage } from "@/components/pagination";
-import { restockShipment } from "@/app/actions/admin-orders";
-import { EditTracking } from "@/components/edit-tracking";
+import { markPackageReady, restockShipment } from "@/app/actions/admin-orders";
 
 export const metadata: Metadata = { title: "Seller orders" };
 
 const TABS = {
-  ship: { label: "To ship", statuses: ["PENDING"] },
+  ship: { label: "To pack", statuses: ["PENDING"] },
   sent: { label: "On the way", statuses: ["DISPATCHED"] },
   done: { label: "Delivered", statuses: ["DELIVERED", "RETURNED"] },
   all: { label: "All", statuses: null },
@@ -32,7 +30,7 @@ export default function SellerOrdersPage({ searchParams }: PageProps<"/seller/or
     <main className="mx-auto max-w-6xl p-4 sm:p-8">
       <h1 className="text-3xl font-bold">Orders</h1>
       <p className="mb-6 mt-1 text-text-secondary">
-        Pack each order, hand it to a courier, then enter the courier and tracking number. We email the buyer for you.
+        Pack each order within 2 days with its printed packing slip inside, press Ready and drop it at the MIVO Hub. MIVO books the courier and emails the buyer the tracking number.
       </p>
       <Suspense fallback={<div className="h-64 animate-pulse rounded-xl border border-border bg-surface" />}>
         <SellerOrders searchParams={searchParams} />
@@ -54,7 +52,8 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
   const mine = eq(shipments.sellerId, profile.id);
   const where: SQL | undefined = statuses ? and(mine, inArray(shipments.status, [...statuses])) : mine;
 
-  const [counts, list, courierList] = await Promise.all([
+  const hub = getHub();
+  const [counts, list] = await Promise.all([
     db.select({ status: shipments.status, n: count() }).from(shipments).where(mine).groupBy(shipments.status),
     db
       .select({
@@ -62,7 +61,8 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
         orderId: orders.id,
         status: shipments.status,
         deliveryFee: shipments.deliveryFee,
-        courierId: shipments.courierId,
+        packedAt: shipments.packedAt,
+        inHubAt: shipments.inHubAt,
         courierName: couriers.name,
         trackingNumber: shipments.trackingNumber,
         dispatchedAt: shipments.dispatchedAt,
@@ -86,7 +86,6 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
       .orderBy(desc(orders.createdAt))
       .limit(PAGE_SIZE)
       .offset((page - 1) * PAGE_SIZE),
-    getActiveCouriers(),
   ]);
 
   const items = list.length
@@ -148,7 +147,8 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
             const cod = s.paymentMethod === "COD" && s.paymentStatus !== "PAID";
             const awaitingPayment = s.paymentMethod === "BANK_TRANSFER" && s.paymentStatus !== "PAID";
             const readySince = s.paymentMethod === "BANK_TRANSFER" ? s.paidAt : s.createdAt;
-            const late = s.status === "PENDING" && !awaitingPayment && isOverdue(readySince);
+            // The boutique's job is done once it has packed: late = not packed in time.
+            const late = s.status === "PENDING" && !awaitingPayment && !s.packedAt && isOverdue(readySince);
             const cancelled = s.status === "CANCELLED";
 
             return (
@@ -201,49 +201,33 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
                     <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-secondary">Payment</h3>
                     {cod ? (
                       <p>
-                        Courier collects <strong>{formatLKR(itemsTotal + Number(s.deliveryFee))}</strong>
-                        <span className="block text-xs text-text-secondary">Cash on delivery (items + LKR {Number(s.deliveryFee)} delivery)</span>
+                        Cash on delivery: the customer pays <strong>{formatLKR(itemsTotal + Number(s.deliveryFee))}</strong> to the courier.
+                        <span className="block text-xs text-text-secondary">MIVO books the courier and collects the cash.</span>
                       </p>
                     ) : awaitingPayment ? (
-                      <p className="font-medium text-accent-hover">Waiting for MIVO to confirm the bank transfer. Don&apos;t ship yet.</p>
+                      <p className="font-medium text-accent-hover">Waiting for MIVO to confirm the bank transfer. Don&apos;t pack yet.</p>
                     ) : (
                       <p className="text-success">
-                        Paid. The courier collects nothing.
-                        <span className="block text-xs text-text-secondary">
-                          Book any courier: MIVO repays the {formatLKR(s.deliveryFee)} delivery fee with your payout.
-                        </span>
+                        Paid.
+                        <span className="block text-xs text-text-secondary">MIVO books and pays the courier. You only pack.</span>
                       </p>
                     )}
                   </div>
                 </div>
 
                 <div className="mt-4 border-t border-border pt-4">
-                  {s.status === "PENDING" && !awaitingPayment && (
-                    <DispatchForm
-                      shipmentId={s.id}
-                      orderRef={orderRef(s.orderId)}
-                      codAmount={s.paymentMethod === "COD" ? formatLKR(itemsTotal + Number(s.deliveryFee)) : null}
-                      couriers={s.paymentMethod === "COD" ? codCouriers(courierList) : courierList}
-                    />
+                  {s.status === "PENDING" && !awaitingPayment && !cancelled && (
+                    <HubStep packedAt={s.packedAt} inHubAt={s.inHubAt} shipmentId={s.id} orderRef={orderRef(s.orderId)} hub={hub} />
                   )}
                   {(s.status === "DISPATCHED" || s.status === "DELIVERED" || s.status === "RETURNED") && (
                     <p className="text-sm">
-                      {s.courierName} · <span className="font-mono">{s.trackingNumber}</span>
+                      Sent by MIVO with {s.courierName} · <span className="font-mono">{s.trackingNumber}</span>
                       <span className="text-text-secondary">
                         {" "}
-                        · sent {s.dispatchedAt ? formatDateTime(s.dispatchedAt) : ""}
+                        · {s.dispatchedAt ? formatDateTime(s.dispatchedAt) : ""}
                         {s.status === "DELIVERED" && s.deliveredAt && <> · delivered {formatDateTime(s.deliveredAt)}</>}
                       </span>
                     </p>
-                  )}
-                  {s.status === "DISPATCHED" && (
-                    <div className="mt-1">
-                      <EditTracking
-                        shipmentId={s.id}
-                        couriers={s.paymentMethod === "COD" ? codCouriers(courierList) : courierList}
-                        current={{ courierId: s.courierId, courierName: s.courierName, tracking: s.trackingNumber }}
-                      />
-                    </div>
                   )}
                   {s.status === "PENDING" && awaitingPayment && (
                     <p className="text-xs text-text-secondary">You&apos;ll get an email as soon as this order is ready to ship.</p>
@@ -280,5 +264,78 @@ async function SellerOrders({ searchParams }: Pick<PageProps<"/seller/orders">, 
       )}
       <Pagination page={page} total={countOf(tab)} href={(p) => href(tab, p)} />
     </>
+  );
+}
+
+/** To pack → Ready → at the MIVO Hub. */
+function HubStep({
+  packedAt,
+  inHubAt,
+  shipmentId,
+  orderRef: ref,
+  hub,
+}: {
+  packedAt: Date | null;
+  inHubAt: Date | null;
+  shipmentId: string;
+  orderRef: string;
+  hub: ReturnType<typeof getHub>;
+}) {
+  const where = (
+    <span className="block text-xs text-text-secondary">
+      {hub.address ? (
+        <>
+          MIVO Hub: <strong className="text-text">{hub.address}</strong>
+          {hub.hours && <> · {hub.hours}</>}
+        </>
+      ) : (
+        "MIVO will tell you where to drop it off."
+      )}
+    </span>
+  );
+  const slip = (
+    <a
+      href={`/api/packing-slip/${shipmentId}`}
+      target="_blank"
+      rel="noopener"
+      className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-surface px-3 py-2 text-sm font-medium hover:bg-muted"
+    >
+      🖨 Print Packing Slip
+    </a>
+  );
+  if (inHubAt) {
+    return (
+      <p className="text-sm text-success">
+        ✓ Received at the MIVO Hub {formatDateTime(inHubAt)}. MIVO will hand it to the courier. Your part is done.
+      </p>
+    );
+  }
+  if (packedAt) {
+    return (
+      <div className="flex flex-wrap items-center gap-3">
+        <p className="text-sm">
+          <span className="font-medium text-success">✓ Ready since {formatDateTime(packedAt)}.</span> Write {ref} on the parcel and drop it at
+          the MIVO Hub.
+          {where}
+        </p>
+        {slip}
+      </div>
+    );
+  }
+  return (
+    <ActionForm
+      action={markPackageReady}
+      fields={{ shipmentId }}
+      confirmMessage={`Is ${ref} packed with its packing slip inside? Write ${ref} on the parcel, then drop it at the MIVO Hub.`}
+      className="flex flex-wrap items-center gap-3"
+    >
+      {slip}
+      <SubmitButton>Packed, Ready for MIVO</SubmitButton>
+      <span className="text-xs text-text-secondary">
+        Print the packing slip and put it inside with the items, write <strong className="font-mono">{ref}</strong> on the parcel, then press
+        Ready.
+        {where}
+      </span>
+    </ActionForm>
   );
 }

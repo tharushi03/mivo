@@ -117,8 +117,8 @@ export const sellerProfiles = pgTable("seller_profiles", {
   bankAccountName: varchar("bank_account_name", { length: 255 }),
   bankAccountNumber: varchar("bank_account_number", { length: 100 }),
   bankDetailsUpdatedAt: timestamp("bank_details_updated_at", { withTimezone: true }),
-  // Platform commission for this seller, as a percentage (e.g. 10.00 = 10%).
-  commissionRate: numeric("commission_rate", { precision: 5, scale: 2 }).default("10.00").notNull(),
+  // Platform commission for this seller, as a percentage (e.g. 5.00 = 5%).
+  commissionRate: numeric("commission_rate", { precision: 5, scale: 2 }).default("5.00").notNull(),
   isVerified: boolean("is_verified").default(false).notNull(), // Admin must approve
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 });
@@ -134,13 +134,35 @@ export const products = pgTable(
     title: varchar("title", { length: 255 }).notNull(),
     description: text("description"),
     price: numeric("price", { precision: 10, scale: 2 }).notNull(), // LKR
-    category: varchar("category", { length: 100 }), // e.g. "Dresses", "Tops", "Batik"
+    // Where it sits in the menu (slugs from src/lib/categories.ts), e.g. women › dresses › frocks.
+    department: varchar("department", { length: 20 }).default("women").notNull(),
+    category: varchar("category", { length: 100 }),
+    subcategory: varchar("subcategory", { length: 60 }),
     // Sizes and stock live in product_variants (one row per size).
     imageUrl: text("image_url").notNull(), // Cloudflare R2 URL later
     isActive: boolean("is_active").default(true).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   },
-  (t) => [index("products_seller_idx").on(t.sellerId), index("products_category_idx").on(t.category)],
+  (t) => [index("products_seller_idx").on(t.sellerId), index("products_category_idx").on(t.department, t.category, t.subcategory)],
+);
+
+// "Style It With" on the product page: up to 4 of the same boutique's products that a
+// boutique picks to go with this one (a top with a skirt and a bangle, for example).
+export const productPairings = pgTable(
+  "product_pairings",
+  {
+    productId: uuid("product_id")
+      .references(() => products.id, { onDelete: "cascade" })
+      .notNull(),
+    pairedProductId: uuid("paired_product_id")
+      .references(() => products.id, { onDelete: "cascade" })
+      .notNull(),
+    position: integer("position").default(0).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.productId, t.pairedProductId] }),
+    check("product_pairings_not_self", sql`${t.productId} <> ${t.pairedProductId}`),
+  ],
 );
 
 // ---------- 3b. Product Variants (stock per size) ----------
@@ -285,6 +307,13 @@ export const shipments = pgTable(
     trackingNumber: varchar("tracking_number", { length: 100 }),
     // Delivery fee the buyer paid for THIS package (LKR 400 per boutique).
     deliveryFee: numeric("delivery_fee", { precision: 10, scale: 2 }).default("0").notNull(),
+    // MIVO Hub: the boutique packs and presses Ready (packedAt), drops the parcel at the
+    // MIVO Hub where the admin presses In Hub (inHubAt), then MIVO books the courier and
+    // enters the tracking number (dispatchedAt, status DISPATCHED). Status stays PENDING
+    // until then. packedAt set = sent through the hub: MIVO paid the courier, so the
+    // boutique gets no delivery fee back.
+    packedAt: timestamp("packed_at", { withTimezone: true }),
+    inHubAt: timestamp("in_hub_at", { withTimezone: true }),
     dispatchedAt: timestamp("dispatched_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
     returnedAt: timestamp("returned_at", { withTimezone: true }),
@@ -411,21 +440,24 @@ export const reviews = pgTable(
     productId: uuid("product_id")
       .references(() => products.id, { onDelete: "cascade" })
       .notNull(),
-    buyerId: uuid("buyer_id")
-      .references(() => users.id, { onDelete: "cascade" })
-      .notNull(),
+    // NULL = a guest buyer (no account), who reviews through their secret order link.
+    buyerId: uuid("buyer_id").references(() => users.id, { onDelete: "cascade" }),
     orderId: uuid("order_id")
       .references(() => orders.id, { onDelete: "cascade" })
       .notNull(), // the delivered order that proves the purchase
     rating: integer("rating").notNull(), // 1-5
+    // Clothes: how it fitted. SMALL = runs small, TRUE = true to size, LARGE = runs large.
+    fit: varchar("fit", { length: 10 }),
     comment: text("comment"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
   },
   (t) => [
-    uniqueIndex("reviews_buyer_product_idx").on(t.buyerId, t.productId),
+    uniqueIndex("reviews_buyer_product_idx").on(t.buyerId, t.productId), // accounts: one review per product
+    uniqueIndex("reviews_order_product_idx").on(t.orderId, t.productId), // guests: one per product per order
     index("reviews_product_created_idx").on(t.productId, t.createdAt),
     check("reviews_rating_range", sql`${t.rating} between 1 and 5`),
+    check("reviews_fit_values", sql`${t.fit} is null or ${t.fit} in ('SMALL', 'TRUE', 'LARGE')`),
   ],
 );
 

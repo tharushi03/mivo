@@ -48,17 +48,24 @@ It returns e.g. `{"reminded":1,"expired":0,"tokensDeleted":3}` and is safe to ru
 ### 5. Database backups
 Add a daily `pg_dump` backup of the Postgres service in Dokploy (Database → Backups) before taking real orders.
 
-### 6. Courier accounts (before offering cash on delivery)
-Couriers pay COD cash to whoever owns the account a parcel was booked on, so COD parcels must be booked on
-**MIVO's** merchant accounts. On **Admin → Couriers**, for each courier MIVO has an account with, enter the
-account number and booking steps for boutiques (never a password) and tick **MIVO COD account**.
-Until at least one courier is ticked, checkout offers bank transfer only. COD packages can only be dispatched
-with ticked couriers. **Admin → Shipments → Download on-the-way packages (CSV)** lists parcels with couriers
-and the COD cash each should bring in, for matching against courier statements.
+### 6. MIVO Hub and courier accounts
+Every parcel goes through the MIVO Hub. Set `MIVO_HUB_ADDRESS` and `MIVO_HUB_HOURS` (shown to boutiques).
+
+1. A boutique packs the order, writes the order number on the parcel and presses **Packed, Ready for MIVO**.
+2. When the parcel reaches the hub, press **In Hub** on **Admin -> Shipments** (tab "Packed (to collect)").
+3. When the courier collects it, enter the courier and tracking number (tab "In hub (to send)"). The buyer is emailed.
+
+MIVO books and pays the courier, so boutiques get no delivery fee back for hub parcels. On **Admin -> Couriers**,
+enter MIVO's account number for each courier and tick **MIVO COD account** where MIVO can take cash on delivery.
+Until at least one courier is ticked, checkout offers bank transfer only. **Admin -> Shipments -> Download
+on-the-way packages (CSV)** lists parcels with couriers and the COD cash each should bring in.
 
 ### 7. One app instance
 Login, sign-up, order and password-reset rate limits are kept in memory. That is correct for a single
 container; if you ever scale to several, move them to Redis or Postgres (`src/lib/rate-limit.ts`).
+Each container also keeps its own pool of `DB_POOL_MAX` database connections (default 10). Keep
+containers × `DB_POOL_MAX` below Postgres's `max_connections` (100 by default), or add PgBouncer
+(then set `prepare: false` in `src/db/index.ts`).
 
 ### 8. Shop links and guest checkout
 - Boutiques share `https://<your-domain>/s/<slug>` (their shop) and `/p/<code>` (one product). Set
@@ -82,6 +89,6 @@ A rejected buyer is emailed the reason and gets 48 more hours to send a new slip
 
 - Buyers pay MIVO (bank transfer, or cash to the courier for COD). Delivery is LKR 400 per boutique package.
 - A boutique becomes payable for a package **7 days after delivery** (the return window, `SITE.returnDays`).
-- Payout = items − commission (at the rate saved on each item at checkout) + delivery fees the boutique paid
-  itself on prepaid packages. COD packages are booked on MIVO's courier accounts, so there is nothing to repay.
+- Payout = items − commission (at the rate saved on each item at checkout). MIVO pays the courier from the hub.
+  Packages a boutique sent itself before the hub still get their prepaid delivery fee repaid.
 - Cancellations and returns create refund records; admins settle them on **Admin → Orders → Refunds due**.

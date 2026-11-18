@@ -113,6 +113,41 @@
       "when": 1794676352489,
       "tag": "0015_slip_verification",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1794724087864,
+      "tag": "0016_mivo_hub",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794726278191,
+      "tag": "0017_commission_5",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794746893737,
+      "tag": "0018_review_fit_guests",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794759945417,
+      "tag": "0019_categories_tree",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1794765496552,
+      "tag": "0020_style_it_with",
+      "breakpoints": true
     }
   ]
 }

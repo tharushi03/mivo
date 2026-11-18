@@ -52,7 +52,8 @@ type Demo = {
   title: string;
   description: string;
   price: string;
-  category: string;
+  category: string; // slugs from src/lib/categories.ts (all demo pieces are Women's)
+  subcategory: string;
   /** Stock per size, in display order. */
   stock: Record<string, number>;
   colors: [[number, number, number], [number, number, number]];
@@ -60,15 +61,15 @@ type Demo = {
 };
 
 const BOUTIQUE: Demo[] = [
-  { title: "Linen Wrap Dress", description: "Breathable pure linen with a tie waist.\nTrue to size. Hand wash cold.", price: "6450", category: "Dresses", stock: { S: 3, M: 3, L: 2 }, colors: [[232, 213, 196], [200, 121, 89]] },
-  { title: "Cotton Puff-Sleeve Top", description: "Soft cotton poplin with gathered sleeves.", price: "3200", category: "Tops", stock: { XS: 2, S: 3, M: 3, L: 2, XL: 2 }, colors: [[250, 247, 242], [233, 225, 216]] },
-  { title: "Wide-Leg Trousers", description: "High-rise, relaxed fit with side pockets.", price: "4800", category: "Bottoms", stock: { S: 1, M: 0, L: 2, XL: 0 }, colors: [[119, 113, 107], [23, 23, 23]] },
-  { title: "Handloom Saree", description: "Handwoven handloom cotton. Blouse piece included.", price: "12900", category: "Sarees", stock: { "FREE SIZE": 2 }, colors: [[102, 124, 104], [52, 72, 56]] },
-  { title: "Archived Blazer", description: "Hidden product — should never appear on the storefront.", price: "9900", category: "Other", stock: { M: 1 }, colors: [[60, 60, 60], [20, 20, 20]], isActive: false },
+  { title: "Linen Wrap Dress", description: "Breathable pure linen with a tie waist.\nTrue to size. Hand wash cold.", price: "6450", category: "dresses", subcategory: "casual-dresses", stock: { S: 3, M: 3, L: 2 }, colors: [[232, 213, 196], [200, 121, 89]] },
+  { title: "Cotton Puff-Sleeve Top", description: "Soft cotton poplin with gathered sleeves.", price: "3200", category: "tops", subcategory: "tops-and-t-shirts", stock: { XS: 2, S: 3, M: 3, L: 2, XL: 2 }, colors: [[250, 247, 242], [233, 225, 216]] },
+  { title: "Wide-Leg Trousers", description: "High-rise, relaxed fit with side pockets.", price: "4800", category: "bottoms", subcategory: "pants-and-trousers", stock: { S: 1, M: 0, L: 2, XL: 0 }, colors: [[119, 113, 107], [23, 23, 23]] },
+  { title: "Handloom Saree", description: "Handwoven handloom cotton. Blouse piece included.", price: "12900", category: "ethnic", subcategory: "sarees", stock: { "FREE SIZE": 2 }, colors: [[102, 124, 104], [52, 72, 56]] },
+  { title: "Archived Blazer", description: "Hidden product — should never appear on the storefront.", price: "9900", category: "tops", subcategory: "shirts", stock: { M: 1 }, colors: [[60, 60, 60], [20, 20, 20]], isActive: false },
 ];
 
 const PENDING_SHOP: Demo[] = [
-  { title: "Batik Kaftan", description: "Hand-dyed batik kaftan. Visible only once the shop is approved.", price: "5600", category: "Batik", stock: { "FREE SIZE": 5 }, colors: [[66, 92, 140], [201, 76, 76]] },
+  { title: "Batik Kaftan", description: "Hand-dyed batik kaftan. Visible only once the shop is approved.", price: "5600", category: "ethnic", subcategory: "batik", stock: { "FREE SIZE": 5 }, colors: [[66, 92, 140], [201, 76, 76]] },
 ];
 
 async function sellerIdFor(email: string) {
@@ -99,6 +100,7 @@ async function insertAll(sellerId: string, list: Demo[]) {
         description: d.description,
         price: d.price,
         category: d.category,
+        subcategory: d.subcategory,
         imageUrl,
         isActive: d.isActive ?? true,
       })

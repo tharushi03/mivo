@@ -112,8 +112,8 @@ export default function TermsPage() {
       <Section title="Selling on MIVO">
         <p>
           Boutiques must be approved by MIVO before their products are shown. Sellers must describe items accurately,
-          keep stock levels up to date, ship each order within 2 days of it being ready, and enter the courier and tracking number in their dashboard. Cash-on-delivery packages must be booked on MIVO&apos;s courier accounts; prepaid packages may be sent with
-          any courier, and MIVO repays the delivery fee the buyer paid. MIVO deducts the commission rate in force when each
+          keep stock levels up to date, pack each order within 2 days of it being ready and deliver the parcel to the MIVO Hub.
+          MIVO books and pays the courier from the MIVO Hub on MIVO&apos;s own courier accounts. MIVO deducts the commission rate in force when each
           order was placed and pays the balance to the seller&apos;s bank account once the package has been delivered for{" "}
           {SITE.returnDays} days (the buyer&apos;s return window). Returned items are not paid for. Separate seller terms may apply.
         </p>

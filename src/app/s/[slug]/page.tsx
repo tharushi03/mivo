@@ -76,7 +76,7 @@ async function Shop({ params }: Pick<PageProps<"/s/[slug]">, "params">) {
             {shop.shopName} is adding its collection. Check back soon.
           </EmptyState>
         ) : (
-          <ul className="grid grid-cols-1 gap-x-6 gap-y-10 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4">
+          <ul className="grid grid-cols-2 gap-x-3 gap-y-8 sm:gap-x-6 sm:gap-y-10 md:grid-cols-3 lg:grid-cols-4">
             {shop.items.map((p, i) => (
               <li key={p.id}>
                 {/* Through the short link, so the order is recorded as this boutique's own sale. */}

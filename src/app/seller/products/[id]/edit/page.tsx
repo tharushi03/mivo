@@ -7,6 +7,7 @@ import { db } from "@/db";
 import { productVariants, products } from "@/db/schema";
 import { requireSeller } from "@/lib/dal";
 import { ProductForm } from "../../_form/product-form";
+import { getPairedIds, getPairingOptions } from "../../_form/pairing-options";
 
 export const metadata: Metadata = { title: "Edit product", robots: { index: false } };
 
@@ -40,23 +41,31 @@ async function EditForm({ params }: Pick<PageProps<"/seller/products/[id]/edit">
   });
   if (!product) notFound();
 
-  const variants = await db
-    .select({ size: productVariants.size, stock: productVariants.stock })
-    .from(productVariants)
-    .where(eq(productVariants.productId, id))
-    .orderBy(asc(productVariants.position), asc(productVariants.size));
+  const [variants, pairingOptions, pairWith] = await Promise.all([
+    db
+      .select({ size: productVariants.size, stock: productVariants.stock })
+      .from(productVariants)
+      .where(eq(productVariants.productId, id))
+      .orderBy(asc(productVariants.position), asc(productVariants.size)),
+    getPairingOptions(profile.id, id),
+    getPairedIds(id),
+  ]);
 
   return (
     <ProductForm
+      pairingOptions={pairingOptions}
       product={{
         id: product.id,
         title: product.title,
         description: product.description ?? "",
         price: Number(product.price).toString(),
+        department: product.department,
         category: product.category ?? "",
+        subcategory: product.subcategory ?? "",
         isActive: product.isActive,
         imageUrl: product.imageUrl,
         variants: variants.map((v) => ({ size: v.size, stock: String(v.stock), original: v.stock })),
+        pairWith,
       }}
     />
   );

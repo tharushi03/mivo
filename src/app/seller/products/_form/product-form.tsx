@@ -3,7 +3,8 @@
 import { useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 import { createProduct, updateProduct, type ProductFormState } from "./actions";
-import { CATEGORIES } from "./categories";
+import { CategoryPicker } from "./category-picker";
+import { PairingPicker, type PairingOption } from "./pairing-picker";
 import { VariantEditor } from "./variant-editor";
 import type { VariantRow } from "./variants";
 
@@ -13,10 +14,14 @@ export type EditableProduct = {
   title: string;
   description: string;
   price: string;
+  department: string;
   category: string;
+  subcategory: string;
   isActive: boolean;
   imageUrl: string;
   variants: VariantRow[];
+  /** "Style it with" product ids, in order. */
+  pairWith: string[];
 };
 
 const input =
@@ -26,7 +31,8 @@ function FieldError({ msg }: { msg?: string }) {
   return msg ? <p className="mt-1 text-xs text-error">{msg}</p> : null;
 }
 
-export function ProductForm({ product }: { product?: EditableProduct }) {
+/** `pairingOptions`: the boutique's other products, for "Style it with". */
+export function ProductForm({ product, pairingOptions }: { product?: EditableProduct; pairingOptions: PairingOption[] }) {
   const editing = Boolean(product);
   const [state, formAction, pending] = useActionState<ProductFormState, FormData>(editing ? updateProduct : createProduct, {});
   const [preview, setPreview] = useState<string | null>(null);
@@ -106,35 +112,31 @@ export function ProductForm({ product }: { product?: EditableProduct }) {
         <FieldError msg={e.description} />
       </div>
 
-      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-        <div>
-          <label htmlFor="price" className="mb-1 block text-sm font-medium">
-            Price (LKR)
-          </label>
-          <input id="price" name="price" type="number" min="1" step="0.01" defaultValue={v.price} required className={input} placeholder="4500" />
-          <FieldError msg={e.price} />
-        </div>
-
-        <div>
-          <label htmlFor="category" className="mb-1 block text-sm font-medium">
-            Category
-          </label>
-          <select id="category" name="category" defaultValue={v.category ?? ""} required className={input}>
-            <option value="" disabled>
-              Choose…
-            </option>
-            {CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {c}
-              </option>
-            ))}
-          </select>
-          <FieldError msg={e.category} />
-        </div>
+      <div className="sm:max-w-xs">
+        <label htmlFor="price" className="mb-1 block text-sm font-medium">
+          Price (LKR)
+        </label>
+        <input id="price" name="price" type="number" min="1" step="0.01" defaultValue={v.price} required className={input} placeholder="4500" />
+        <FieldError msg={e.price} />
       </div>
+
+      {/* Remount when the server sends values back, so the dropdowns show what was sent. */}
+      <CategoryPicker
+        key={`${v.department}/${v.category}/${v.subcategory}`}
+        initial={{ department: v.department ?? "women", category: v.category ?? "", subcategory: v.subcategory ?? "" }}
+        inputClass={input}
+        error={e.category}
+      />
 
       {/* Remount when the server sends rows back (e.g. fresh stock after a conflict). */}
       <VariantEditor key={JSON.stringify(variantRows)} initial={variantRows} error={e.variants} />
+
+      <PairingPicker
+        key={JSON.stringify(state.pairWith ?? product?.pairWith ?? [])}
+        options={pairingOptions}
+        initial={state.pairWith ?? product?.pairWith ?? []}
+        error={e.pairWith}
+      />
 
       {editing && (
         <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-border bg-background p-4">
